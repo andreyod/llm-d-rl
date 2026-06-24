@@ -20,7 +20,11 @@ from llm_d_rl_verl_integration.endpoints import model_label as model_label_for_e
 
 logger = logging.getLogger(__name__)
 
-_SIDECAR_BINARY = "/usr/local/bin/llm-d-routing-sidecar"
+# Overridable via VERL_SIDECAR_BINARY for the same runtime-injection reason as
+# the EPP binary (see llmd_actor.py): swap the sidecar without a verl rebuild.
+_SIDECAR_BINARY = os.environ.get(
+    "VERL_SIDECAR_BINARY", "/usr/local/bin/llm-d-routing-sidecar"
+)
 _DEFAULT_NIXL_BASE_PORT = 5600
 _VLLM_LOCAL_BIND_HOST = "127.0.0.1"
 

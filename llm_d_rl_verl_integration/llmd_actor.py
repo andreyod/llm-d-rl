@@ -14,7 +14,10 @@ from llm_d_rl_verl_integration.endpoints import write_pd_endpoints, write_rollou
 
 logger = logging.getLogger(__name__)
 
-_EPP_BINARY = "/usr/local/bin/epp"
+# Path to the EPP binary. Overridable via VERL_EPP_BINARY so the binary can be
+# injected at runtime (fetch-epp initContainer / push-epp.sh) instead of being
+# baked into the verl image; iterating on the EPP then needs no verl rebuild.
+_EPP_BINARY = os.environ.get("VERL_EPP_BINARY", "/usr/local/bin/epp")
 _ENVOY_BINARY = "/usr/local/bin/envoy"
 _EPP_LOG = "/tmp/epp.log"
 _ENVOY_LOG = "/tmp/envoy.log"

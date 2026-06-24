@@ -17,9 +17,10 @@ ARG BASE_IMAGE=verlai/verl:vllm018.dev1
 
 # Binary source images — must match the target platform so the executables run on the node.
 # TARGETPLATFORM is set automatically by `docker buildx build --platform <arch>`.
-FROM --platform=${TARGETPLATFORM} ghcr.io/llm-d/llm-d-router-endpoint-picker-dev:main AS epp-source
-# TODO: switch to official once pushed
-FROM --platform=${TARGETPLATFORM} ghcr.io/naomieisen/llm-d-router-sidecar:pr-1458 AS sidecar-source 
+# NOTE: no epp-source stage. The EPP binary is intentionally NOT baked into this
+# image; it is supplied at runtime from a SEPARATE EPP image or binary (see
+# push-epp.sh / VERL_EPP_BINARY), so iterating on the EPP never rebuilds verl.
+FROM --platform=${TARGETPLATFORM} ghcr.io/ezrasilvera/llm-d-router-disagg-sidecar:burst-scorer AS sidecar-source
 FROM --platform=${TARGETPLATFORM} docker.io/envoyproxy/envoy:distroless-v1.33.2 AS envoy-source
 
 FROM ${BASE_IMAGE}
@@ -42,7 +43,11 @@ RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
     python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
 
 # --- Llmd binaries ---
-COPY --from=epp-source /app/epp /usr/local/bin/epp
+# EPP is intentionally NOT copied here. It is supplied at runtime from a separate
+# EPP image or binary (push-epp.sh -> /opt/epp-bin, selected via VERL_EPP_BINARY),
+# so iterating on the EPP never rebuilds this 28 GB image. Sidecar/envoy are
+# stable and stay baked in (override the sidecar via VERL_SIDECAR_BINARY if you
+# iterate on it too).
 COPY --from=sidecar-source /app/pd-sidecar /usr/local/bin/llm-d-routing-sidecar
 COPY --from=envoy-source /usr/local/bin/envoy /usr/local/bin/envoy
 

@@ -2,7 +2,7 @@ apiVersion: ray.io/v1
 kind: RayCluster
 metadata:
   name: verl-cluster
-  namespace: <your-namespace>
+  namespace: ezraverl
 spec:
   rayVersion: '2.47.1'
   headGroupSpec:
@@ -10,19 +10,43 @@ spec:
       num-cpus: "4"
     template:
       spec:
-        # Prefer the same node as the worker pod  when possible.
+        # Co-locate the head on the same node as the worker. EPP and Envoy run on
+        # the head, so keeping it on the worker's node keeps rollout routing on-node.
+        # The worker is anchored to a GPU node by its nvidia.com/gpu request; the head
+        # follows it via podAffinity (head -> worker, one direction, to avoid deadlock).
         affinity:
-          nodeAffinity:
+          podAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-              - matchExpressions:
-                - key: kubernetes.io/hostname
-                  operator: In
-                  values:
-                  - <node-name>
+            - labelSelector:
+                matchLabels:
+                  ray.io/cluster: verl-cluster
+                  ray.io/node-type: worker
+              topologyKey: kubernetes.io/hostname
+        # EPP is NOT baked into the verl image. At pod start the fetch-epp init
+        # container pulls the SEPARATE (public) EPP image with crane and extracts
+        # its /app/epp binary into the shared epp-bin volume, which ray-head then
+        # launches via VERL_EPP_BINARY (/opt/epp-bin/epp). So iterating on the EPP
+        # is: push a new EPP image tag + recreate this pod - the verl image never
+        # rebuilds. push-epp.sh covers the faster no-recreate inner loop.
+        initContainers:
+        - name: fetch-epp
+          # Generic registry tool pinned by digest (go-containerregistry crane
+          # :debug, which ships /busybox/sh + /busybox/tar). Never rebuilt.
+          image: gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252
+          command: ["/busybox/sh", "-c"]
+          args:
+          - '/ko-app/crane export --platform linux/amd64 "$EPP_IMAGE" - | /busybox/tar -xOf - app/epp > /opt/epp-bin/epp && chmod +x /opt/epp-bin/epp'
+          env:
+          # The only knob: bump this tag to change the EPP version a recreated
+          # pod boots with. Must be an anonymously-pullable (public) image.
+          - name: EPP_IMAGE
+            value: "ghcr.io/ezrasilvera/llm-d-router-endpoint-picker:burst-longest"
+          volumeMounts:
+          - mountPath: /opt/epp-bin
+            name: epp-bin
         containers:
         - name: ray-head
-          image: ghcr.io/naomieisen/verl:incubation # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
+          image: ghcr.io/ezrasilvera/verl:burst-scorer # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -81,6 +105,13 @@ spec:
           - name: VERL_FILE_LOGGER_ROOT
             value: "/tmp/verl/logs"
 
+          # --- EPP binary path (filled by the fetch-epp init container) ---
+          # EPP is not in the verl image; fetch-epp extracts it from the separate
+          # EPP image into /opt/epp-bin, and push-epp.sh can overwrite it live.
+          # The actor launches whatever binary is here.
+          - name: VERL_EPP_BINARY
+            value: "/opt/epp-bin/epp"
+
           # --- vLLM / Ray settings ---
           - name: VLLM_USE_V1
             value: "1"
@@ -124,11 +155,11 @@ spec:
           - containerPort: 8081
             name: envoy
           volumeMounts:
+          # Writable (not readOnly): push-epp.sh kubectl-cp's into here at runtime.
+          - mountPath: /opt/epp-bin
+            name: epp-bin
           - mountPath: /dev/shm
             name: dshm
-          - mountPath: /etc/verl-configs
-            name: verl-configs
-            readOnly: true
           - mountPath: /etc/llmd-configs
             name: llmd-epp-configs
             readOnly: true
@@ -137,12 +168,14 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: "32Gi"
-        - name: verl-configs
-          configMap:
-            name: verl-config-epp
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs
+        # Shared scratch: fetch-epp (init) extracts the EPP binary here and
+        # ray-head reads it at /opt/epp-bin (VERL_EPP_BINARY); push-epp.sh can
+        # overwrite it live. Starts empty on a fresh pod.
+        - name: epp-bin
+          emptyDir: {}
 
   workerGroupSpecs:
   # GPU workers: resource requests must match verl-training-config.yaml pool sizes.
@@ -157,20 +190,24 @@ spec:
       num-cpus: "48"   # limit Ray's visible CPUs to reduce internal thread spawning
     template:
       spec:
-        # Prefer the same node as the head pod — EPP and Envoy run on the head node,
-        # so co-locating workers avoids cross-node traffic on every generation request.
+        # No node pinning: the nvidia.com/gpu request anchors this worker to a GPU
+        # node, and the head co-locates onto whatever node it lands on (see head
+        # podAffinity above). The head must NOT also be referenced here, or mutual
+        # required affinity would deadlock the scheduler.
+        # Exclude nodes with known-faulty GPUs (device plugin "GPU is lost" admission
+        # errors) so the scheduler does not keep retrying them. Add hostnames as needed.
         affinity:
           nodeAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
               nodeSelectorTerms:
               - matchExpressions:
                 - key: kubernetes.io/hostname
-                  operator: In
+                  operator: NotIn
                   values:
-                  - <node-name>
+                  - pokprod-b93r44s3
         containers:
         - name: ray-worker
-          image: ghcr.io/naomieisen/verl:incubation # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
+          image: ghcr.io/ezrasilvera/verl:burst-scorer # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -248,23 +285,23 @@ spec:
 
           resources:
             # --- Option A: 8 GPUs ---
-            limits:
-              cpu: "64"
-              memory: "256G"
-              nvidia.com/gpu: "8"
-            requests:
-              cpu: "48"
-              memory: "192G"
-              nvidia.com/gpu: "8"
-            # --- Option B: 4 GPUs ---
             # limits:
-            #   cpu: "32"
-            #   memory: "128G"
-            #   nvidia.com/gpu: "4"
+            #   cpu: "64"
+            #   memory: "256G"
+            #   nvidia.com/gpu: "8"
             # requests:
-            #   cpu: "16"
-            #   memory: "96G"
-            #   nvidia.com/gpu: "4"  
+            #   cpu: "48"
+            #   memory: "192G"
+            #   nvidia.com/gpu: "8"
+            # --- Option B: 4 GPUs ---
+            limits:
+              cpu: "32"
+              memory: "128G"
+              nvidia.com/gpu: "4"
+            requests:
+              cpu: "16"
+              memory: "96G"
+              nvidia.com/gpu: "4"
           volumeMounts:
           - mountPath: /dev/shm
             name: dshm

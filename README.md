@@ -32,6 +32,7 @@ The point of the integration is to utilize EPP as the routing stategy.
 Each generation request is sent to the **Endpoint Picker Plugin (EPP)** via gRPC ext_proc.  EPP scores all available vLLM replicas (prefix-cache hit rate, queue depth, KV utilisation) and injects the chosen backend address as a header.  The `EPPLLMClient` reads that header and forwards the request directly to the selected vLLM replica.
 
 ![epp generate call flow](diagrams/epp-generate-call-flow.png)
+
 ### How the lifecycle works
 
 After all vLLM replicas are up:

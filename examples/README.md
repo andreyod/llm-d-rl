@@ -1,7 +1,10 @@
 # Running the KubeRay Example
 
-Single-node 8-GPU GRPO training on GSM8K with Qwen3-4B using the llm-d RL verl integration.
-A 4-GPU option is also available (see below).
+Single-node GRPO training on GSM8K with Qwen3-4B using the llm-d RL verl integration.
+As shipped, `ray-cluster.yaml` has the **4-GPU** worker option active; an 8-GPU option is
+also provided (commented out in the manifest). The run commands below are grouped the same
+way: the first set targets 8 GPUs, and a [4-GPU Option](#4-gpu-option) section follows. Pick
+the set that matches the worker `resources` block you enabled in the manifest.
 
 ## Prerequisites
 
@@ -14,20 +17,34 @@ A 4-GPU option is also available (see below).
 examples/
   configmap.yaml         # Kubernetes ConfigMap bundling both EPP configs
   ray-cluster.yaml       # RayCluster definition
+  setting-kuberay.md     # KubeRay operator / CRD install instructions
 ```
 
 ## Step 1 — Edit the deployment manifests
 
-In `deployments/ray-cluster.yaml`, replace:
-- `<your-namespace>` — Kubernetes namespace to deploy into
-- `<node-name>` — node name for the GPU node (appears twice: head and worker affinity)
+`configmap.yaml` and `ray-cluster.yaml` both default to the `ezraverl` namespace. Adjust to
+match your environment:
+
+- **Namespace** - replace `ezraverl` (appears in each manifest's `metadata.namespace`, and
+  the ConfigMap reference) with your target namespace.
+- **GPU count** - the worker `resources` block ships with the 4-GPU option active and the
+  8-GPU option commented out. Enable whichever matches your node.
+- **Node placement** - the head co-locates onto the worker's node via `podAffinity`, and the
+  worker is anchored to a GPU node by its `nvidia.com/gpu` request. The worker `nodeAffinity`
+  has a `NotIn` list excluding known-faulty GPU hosts (e.g. `pokprod-b93r44s3`) - edit that
+  list for your cluster.
+
+The EPP binary is **not** baked into the verl image. The `fetch-epp` init container in
+`ray-cluster.yaml` extracts it from the public image set by its `EPP_IMAGE` env on pod start;
+use `push-epp.sh` (repo root) to push a new EPP into a running pod without recreating it. See
+[Supplying the EPP at runtime](../README.md#supplying-the-epp-at-runtime) in the main README.
 
 ## Step 2 — Deploy
 
 ```bash
 # ConfigMap must exist before the cluster starts (pods mount it at /etc/llmd-configs/)
-kubectl apply -f examples/deployments/configmap.yaml
-kubectl apply -f examples/deployments/ray-cluster.yaml
+kubectl apply -f examples/configmap.yaml
+kubectl apply -f examples/ray-cluster.yaml
 ```
 
 Wait for both pods to be ready:
@@ -152,7 +169,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
 
 ## EPP config
 
-The configs in `examples/configs/` are starting points. Customize the scorer weights or swap plugins to tune routing for your workload. The path is passed via `EPP_CONFIG_FILE` — you can mount your own ConfigMap or point to any file accessible on the head node.
+The two configs bundled in `examples/configmap.yaml` (`epp-config.yaml` and `epp-config-pd.yaml`) are starting points. Customize the scorer weights or swap plugins to tune routing for your workload. The path is passed per run via the Hydra override `+actor_rollout_ref.rollout.custom.epp_config_file=...` (see the commands above) — you can mount your own ConfigMap or point to any file accessible on the head node.
 
 See the [main README](../README.md) for the full config reference and architecture overview.
 
@@ -287,14 +304,14 @@ The file path is:
 <VERL_FILE_LOGGER_ROOT>/<trainer.project_name>/<trainer.experiment_name>.jsonl
 ```
 
-`trainer.project_name` and `trainer.experiment_name` are Hydra config fields, overridden in the run script via the `PROJECT_NAME` and `EXPERIMENT_NAME` env vars. In the PD example commands above these are set explicitly, for example:
+`trainer.project_name` and `trainer.experiment_name` are Hydra config fields, overridden in the run script via the `PROJECT_NAME` and `EXPERIMENT_NAME` env vars. In the example commands above these are set explicitly, for example:
 ```bash
-PROJECT_NAME=verl_grpo_gsm8k_examples_pd \
+PROJECT_NAME=verl_grpo_gsm8k_examples \
 EXPERIMENT_NAME=qwen3_4b_grpo_vllm_epp_pd_fsdp_8gpu \
 ```
 which produces:
 ```
-/tmp/verl/logs/verl_grpo_gsm8k_examples_pd/qwen3_4b_grpo_vllm_epp_pd_fsdp_8gpu.jsonl
+/tmp/verl/logs/verl_grpo_gsm8k_examples/qwen3_4b_grpo_vllm_epp_pd_fsdp_8gpu.jsonl
 ```
 
 ```bash

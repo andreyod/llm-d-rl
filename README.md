@@ -2,9 +2,9 @@
 
 Integrates [llm-d](https://github.com/llm-d/llm-d) into [verl](https://github.com/volcengine/verl) RL training rollouts, introducing llm-d's inference router and PD capabilities via llm-d's PD sidecar.
 
-Integration are wired in through Hydra config — no verl source changes.
-This repo introduces to approaches:
-1. Epp as the rollout router.
+Integration are wired in through Hydra config - no verl source changes.
+This repo introduces two approaches:
+1. EPP as the rollout router.
 2. Llmd stack as the inference backend.
 
 ---
@@ -13,7 +13,7 @@ This repo introduces to approaches:
 
 During each training step verl drives generation through the following component hierarchy:
 
-![verl generate call flow](images/verl-generate-call-flow.png)
+![verl generate call flow](diagrams/verl-generate-call-flow.png)
 
 `LLMServerClient` is the object `AgentLoopWorker` calls for every generation request. verl's default implementation uses `GlobalRequestLoadBalancer` to select replicas by least in-flight requests, with sticky sessions for multi-turn continuity.
 
@@ -31,7 +31,7 @@ This integration replaces two components:
 The point of the integration is to utilize EPP as the routing stategy.
 Each generation request is sent to the **Endpoint Picker Plugin (EPP)** via gRPC ext_proc.  EPP scores all available vLLM replicas (prefix-cache hit rate, queue depth, KV utilisation) and injects the chosen backend address as a header.  The `EPPLLMClient` reads that header and forwards the request directly to the selected vLLM replica.
 
-![epp generate call flow](/images/epp-generate-call-flow.png)
+![epp generate call flow](diagrams/epp-generate-call-flow.png)
 ### How the lifecycle works
 
 After all vLLM replicas are up:
@@ -135,8 +135,14 @@ The EPP config must use the PD-aware profile (example in `examples/configmap.yam
 
 ```
 .
+├── push-epp.sh            # Push a freshly built / image-extracted EPP binary into the
+│                          # running head pod with no verl rebuild and no pod recreation.
+├── rl_orchestrate.sh      # Autonomous A/B run orchestrator with collection and
+│                          # md5-verified cleanup.
+│
 ├── docker/
-│   └── Dockerfile.verl-vllm018-llm-d-integration  # Image with base verl, EPP, Envoy and sidecar
+│   └── Dockerfile.verl-vllm018-llm-d-integration  # Image with base verl, Envoy and sidecar.
+│                          # EPP is NOT baked in - it is supplied at runtime (see below).
 │
 ├── examples/
 │   ├── README.md          # KubeRay deployment walkthrough — training script examples for all
@@ -168,6 +174,28 @@ The EPP config must use the PD-aware profile (example in `examples/configmap.yam
         │                                 # to Envoy; Envoy calls EPP and forwards onward.
         └── envoy.yaml                    # Envoy config.
 ```
+
+---
+
+## Supplying the EPP at runtime
+
+The EPP binary is intentionally **not** baked into the verl image (a ~28 GB build),
+so iterating on the EPP never triggers a verl rebuild. `LlmdActor` launches whatever
+binary `VERL_EPP_BINARY` points at (default `/usr/local/bin/epp`, set to
+`/opt/epp-bin/epp` in `examples/ray-cluster.yaml`). There are two ways to get a binary
+there:
+
+- **On pod start (cold path):** the `fetch-epp` init container in `ray-cluster.yaml`
+  extracts `/app/epp` from a separate, public EPP image (set via the `EPP_IMAGE` env in
+  that container) into a shared `epp-bin` emptyDir. To change the EPP version a recreated
+  pod boots with, bump that image tag and recreate the pod.
+- **Into a running pod (fast inner loop):** `./push-epp.sh` builds the EPP from a local
+  scheduler checkout (or extracts it from an image with `--from-image REF`) and
+  `kubectl cp`s it into the head pod's `/opt/epp-bin/epp` - no verl rebuild and no pod
+  recreation. Restart the verl run to pick it up, since EPP is started once per job.
+
+The sidecar and Envoy stay baked into the image; override the sidecar at runtime via
+`VERL_SIDECAR_BINARY` if you need to iterate on it too.
 
 ---
 

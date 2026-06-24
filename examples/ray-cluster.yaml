@@ -178,9 +178,9 @@ spec:
           emptyDir: {}
 
   workerGroupSpecs:
-  # GPU workers: resource requests must match verl-training-config.yaml pool sizes.
-  # Current verl config uses 1 training GPU + 1 standalone rollout GPU on one node
-  # (trainer.n_gpus_per_node=1, rollout.n_gpus_per_node=1) → 2 GPUs per worker pod.
+  # GPU workers: the worker pod's nvidia.com/gpu request must match the GPU count the
+  # run command targets (NGPUS_PER_NODE). As shipped the 4-GPU option below is active
+  # (Option A 8-GPU is commented out); enable whichever matches your run.
   # Raise replicas/maxReplicas only if you add nodes and adjust verl nnodes / n_gpus_per_node.
   - groupName: fsdp-workers
     replicas: 1

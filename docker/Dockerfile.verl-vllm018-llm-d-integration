@@ -5,9 +5,9 @@
 #   - No Go build stage; EPP and sidecar binaries are copied from their
 #     published container images using multi-stage COPY --from.
 #
-# Build (from any directory — no local source context required):
+# Build (from the repo root — no local source context required):
 #   podman build \
-#     -f verl/docker/Dockerfile.verl-vllm018-llm-d-integration \
+#     -f docker/Dockerfile.verl-vllm018-llm-d-integration \
 #     --platform linux/amd64 \
 #     --build-arg VERL_COMMIT=<commit-sha> \
 #     -t <your-registry>/verl:vllm018-llm-d-integration \

@@ -9,7 +9,7 @@ the set that matches the worker `resources` block you enabled in the manifest.
 ## Prerequisites
 
 - Kubernetes cluster with GPU nodes
-- KubeRay CRD and operator installed (see [examples/setting-kuberay.md](setting-kuberay.md) for instructions. )
+- KubeRay CRD and operator installed (see [setting-kuberay.md](setting-kuberay.md) for instructions)
 
 ## Directory structure
 
@@ -20,7 +20,7 @@ examples/
   setting-kuberay.md     # KubeRay operator / CRD install instructions
 ```
 
-## Step 1 — Edit the deployment manifests
+## Step 1 - Edit the deployment manifests
 
 `configmap.yaml` and `ray-cluster.yaml` both default to the `ezraverl` namespace. Adjust to
 match your environment:
@@ -39,7 +39,7 @@ The EPP binary is **not** baked into the verl image. The `fetch-epp` init contai
 use `push-epp.sh` (repo root) to push a new EPP into a running pod without recreating it. See
 [Supplying the EPP at runtime](../README.md#supplying-the-epp-at-runtime) in the main README.
 
-## Step 2 — Deploy
+## Step 2 - Deploy
 
 ```bash
 # ConfigMap must exist before the cluster starts (pods mount it at /etc/llmd-configs/)
@@ -54,7 +54,7 @@ kubectl get pods -w
 
 The `postStart` hook on each pod installs the integration package with pip install and pre-downloads GSM8K and Qwen3-4B. Training should not start until both pods report `Ready`.
 
-## Step 3 — Run training
+## Step 3 - Run training
 
 Exec into the head pod, then run one of the commands below.
 
@@ -65,7 +65,7 @@ cd /opt/verl/examples/grpo_trainer
 
 All commands use verl's own `run_qwen3_4b_fsdp.sh` as the base script and pass the integration overrides via `$@`. `hydra.run.dir` is required because the default `./outputs/` path is read-only in the container.
 
-### EPP — direct gRPC routing
+### EPP - direct gRPC routing
 
 ```bash
 MODEL_PATH=/tmp/verl/models/Qwen3-4B \
@@ -87,7 +87,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### EPP — direct gRPC routing, PD disaggregated
+### EPP - direct gRPC routing, PD disaggregated
 
 ```bash
 INFER_BACKEND=vllm-llmd-pd \
@@ -116,7 +116,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### Llm-d stack (Envoy + EPP — HTTP proxy routing)
+### llm-d stack (Envoy + EPP - HTTP proxy routing)
 
 ```bash
 MODEL_PATH=/tmp/verl/models/Qwen3-4B \
@@ -138,7 +138,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### Llm-d stack (Envoy + EPP — HTTP proxy routing, PD disaggregated)
+### llm-d stack (Envoy + EPP - HTTP proxy routing, PD disaggregated)
 
 ```bash
 INFER_BACKEND=vllm-llmd-pd \
@@ -169,7 +169,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
 
 ## EPP config
 
-The two configs bundled in `examples/configmap.yaml` (`epp-config.yaml` and `epp-config-pd.yaml`) are starting points. Customize the scorer weights or swap plugins to tune routing for your workload. The path is passed per run via the Hydra override `+actor_rollout_ref.rollout.custom.epp_config_file=...` (see the commands above) — you can mount your own ConfigMap or point to any file accessible on the head node.
+The two configs bundled in `examples/configmap.yaml` (`epp-config.yaml` and `epp-config-pd.yaml`) are starting points. Customize the scorer weights or swap plugins to tune routing for your workload. The path is passed per run via the Hydra override `+actor_rollout_ref.rollout.custom.epp_config_file=...` (see the commands above) - you can mount your own ConfigMap or point to any file accessible on the head node.
 
 See the [main README](../README.md) for the full config reference and architecture overview.
 
@@ -178,7 +178,7 @@ See the [main README](../README.md) for the full config reference and architectu
 
 The same scripts work with a 4-GPU Ray cluster by adjusting a few parameters. Run from inside the head pod (`kubectl exec -it <head-pod> -- bash`).
 
-### EPP — direct gRPC routing
+### EPP - direct gRPC routing
 
 ```bash
 NGPUS_PER_NODE=4 \
@@ -203,7 +203,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### EPP — direct gRPC routing, PD disaggregated
+### EPP - direct gRPC routing, PD disaggregated
 
 ```bash
 NGPUS_PER_NODE=4 \
@@ -236,7 +236,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### Llm-d stack (Envoy + EPP — HTTP proxy routing)
+### llm-d stack (Envoy + EPP - HTTP proxy routing)
 
 ```bash
 NGPUS_PER_NODE=4 \
@@ -261,7 +261,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 
-### Llm-d stack (Envoy + EPP — HTTP proxy routing, PD disaggregated)
+### llm-d stack (Envoy + EPP - HTTP proxy routing, PD disaggregated)
 
 ```bash
 NGPUS_PER_NODE=4 \
@@ -297,7 +297,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
 
 #### Training logs (verl)
 
-verl's file logger writes per-step training metrics (rewards, loss, timing) to the directory set by `VERL_FILE_LOGGER_ROOT`. In the example commands this is `/tmp/verl/logs` on the **head pod**. Each training step appends a JSON line to a file in that directory — useful for plotting reward curves or diagnosing training instability.
+verl's file logger writes per-step training metrics (rewards, loss, timing) to the directory set by `VERL_FILE_LOGGER_ROOT`. In the example commands this is `/tmp/verl/logs` on the **head pod**. Each training step appends a JSON line to a file in that directory - useful for plotting reward curves or diagnosing training instability.
 
 The file path is:
 ```
@@ -326,7 +326,7 @@ Each integration component writes its output to a fixed file path on the pod it 
 |------|-----|-----------|----------|
 | `/tmp/epp.log` | head | EPP subprocess | Endpoint scoring decisions, plugin output, gRPC ext_proc traffic |
 | `/tmp/envoy.log` | head | Envoy proxy | HTTP request routing, upstream selection, connection errors |
-| `/tmp/sidecar-decode-{rank}.log` | worker | llm-d routing sidecar (one per decode replica) | NIXL V2 protocol — prefill calls, `kv_transfer_params` received, decode forwarding |
+| `/tmp/sidecar-decode-{rank}.log` | worker | llm-d routing sidecar (one per decode replica) | NIXL V2 protocol - prefill calls, `kv_transfer_params` received, decode forwarding |
 | `/tmp/ray/session_latest/logs/worker-*.out` | worker | vLLM prefill and decode engines | vLLM engine logs including NIXL KV transfer traces when `VERL_VLLM_LOG_LEVEL=DEBUG` |
 
 To stream a log live:
@@ -337,7 +337,7 @@ kubectl exec <worker-pod> -- tail -f /tmp/sidecar-decode-0.log
 
 #### Increasing verbosity
 
-All components default to quiet logging. Set these env vars to increase verbosity — either in the shell before launching training, or in the `env:` section of your KubeRay `RayCluster` / `RayJob` container spec.
+All components default to quiet logging. Set these env vars to increase verbosity - either in the shell before launching training, or in the `env:` section of your KubeRay `RayCluster` / `RayJob` container spec.
 
 | Env var | Component | Default | Debug value |
 |---------|-----------|---------|-------------|
@@ -348,7 +348,7 @@ All components default to quiet logging. Set these env vars to increase verbosit
 
 *Note: Ray actors are spawned as new processes on remote nodes and do not inherit the launching shell's environment.*
 
-With *KubeRay* — set in the container spec; vars are present before Ray starts:
+With *KubeRay* - set in the container spec; vars are present before Ray starts:
 
 ```yaml
 containers:
@@ -371,4 +371,4 @@ trainer.rollout_data_dir=/tmp/verl/generations/train \
 ```
 
 Outputs are written as parquet files to the specified directories on the head node. This is useful for inspecting model behavior or offline reward analysis.
-Make sure you have write premission to the destination path!!
+Make sure you have write permission to the destination path.

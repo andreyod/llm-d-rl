@@ -1,7 +1,9 @@
-All the steps above are taken from here:
-[KubeRay Operator Helm Chart](https://github.com/ray-project/kuberay/tree/7092f76e6f08fa86ad21c37cd8216914dd215975/helm-chart/kuberay-operator)
+# Installing KubeRay
 
-I chose the approach of installing the CRDs separately from the operator, to keep the permission requirements for each independent.
+The steps below are based on the
+[KubeRay Operator Helm Chart](https://github.com/ray-project/kuberay/tree/7092f76e6f08fa86ad21c37cd8216914dd215975/helm-chart/kuberay-operator).
+
+The CRDs are installed separately from the operator, to keep the permission requirements for each independent.
 
 ### 1. Add the KubeRay Helm repository
 
@@ -41,4 +43,4 @@ helm install kuberay-operator kuberay/kuberay-operator \
   --skip-crds
 ```
 
-Note that I used the flags for deploying within the namespace, and I skipped the CRD installation. This will also enable non-admin users to deploy it, in clusters that already have the CRDs.
+These flags deploy the operator within a single namespace and skip the CRD installation, which also lets non-admin users deploy it on clusters that already have the CRDs.

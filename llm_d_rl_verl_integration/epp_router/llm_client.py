@@ -8,7 +8,11 @@ PD:     EPP picks decode endpoint + sidecar headers → call actor.generate.remo
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
+import time
 from typing import Any, Optional
 
 import ray
@@ -17,6 +21,14 @@ from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import TokenOutput
 
 logger = logging.getLogger(__name__)
+
+
+def _phash(prompt_ids) -> str:
+    try:
+        b = b",".join(str(int(t)).encode() for t in prompt_ids)
+        return hashlib.blake2b(b, digest_size=8).hexdigest()
+    except Exception:
+        return ""
 
 
 class EPPLLMClient(LLMServerClient):
@@ -58,6 +70,28 @@ class EPPLLMClient(LLMServerClient):
         self.__dict__.update(state)
         from llm_d_rl_verl_integration.epp_router.grpc_client import EPPGrpcClient
         self._epp_client = EPPGrpcClient(self._grpc_addr)
+        self._reqlog_f = self._open_reqlog()
+
+    @staticmethod
+    def _open_reqlog():
+        """Open the per-process JSONL log file if VERL_REQLOG_DIR is set."""
+        d = os.environ.get("VERL_REQLOG_DIR")
+        if not d:
+            return None
+        try:
+            os.makedirs(d, exist_ok=True)
+            return open(os.path.join(d, f"reqlog-{os.getpid()}.jsonl"), "a", buffering=1)
+        except Exception:
+            return None
+
+    def _log_request(self, rec: dict) -> None:
+        """Write a record to the per-process JSONL log. No-op if logging is disabled."""
+        if self._reqlog_f is None:
+            return
+        try:
+            self._reqlog_f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
 
     async def generate(
         self,
@@ -69,7 +103,9 @@ class EPPLLMClient(LLMServerClient):
         video_data=None,
         **kwargs,
     ) -> TokenOutput:
+        t0 = time.monotonic()
         endpoint, sidecar_headers = await self._epp_client.pick(self._model_name, prompt_ids)
+        t_pick = time.monotonic()
 
         if endpoint is None:
             raise RuntimeError(f"EPP returned no endpoint for request {request_id}")
@@ -85,7 +121,7 @@ class EPPLLMClient(LLMServerClient):
         if self._pd_mode and sidecar_headers:
             extra_kwargs["sidecar_headers"] = sidecar_headers
 
-        return await actor.generate.remote(
+        out = await actor.generate.remote(
             prompt_ids=prompt_ids,
             sampling_params=sampling_params,
             request_id=request_id,
@@ -93,3 +129,20 @@ class EPPLLMClient(LLMServerClient):
             video_data=video_data,
             **extra_kwargs,
         )
+        t_end = time.monotonic()
+
+        try:
+            ntok = len(out.token_ids) if getattr(out, "token_ids", None) is not None else None
+        except Exception:
+            ntok = None
+        self._log_request({
+            "ts": time.time(),
+            "request_id": str(request_id),
+            "endpoint": endpoint,
+            "prompt_hash": _phash(prompt_ids),
+            "prompt_tokens": len(prompt_ids),
+            "output_tokens": ntok,
+            "pick_s": round(t_pick - t0, 5),
+            "gen_s": round(t_end - t_pick, 5),
+        })
+        return out

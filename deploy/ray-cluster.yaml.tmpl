@@ -222,6 +222,32 @@ spec:
                   operator: NotIn
                   values:
                   - excluded-node
+        # The sidecar is NOT baked into the verl image. At pod start the
+        # fetch-sidecar init container pulls the SEPARATE (public) sidecar image
+        # with crane and extracts its /app/pd-sidecar binary into the shared
+        # llm-d-bins volume, which decode replicas launch via VERL_SIDECAR_BINARY
+        # (/opt/llm-d-bins/pd-sidecar). Only used in PD mode. Bump the image tag in
+        # deploy/deploy.env + recreate the pod to change it. Worker-only: the EPP
+        # and Envoy binaries are fetched on the head, the sidecar runs here.
+        initContainers:
+        - name: fetch-sidecar
+          # Generic registry tool pinned by digest (go-containerregistry crane
+          # :debug, which ships /busybox/sh + /busybox/tar). Never rebuilt.
+          image: ${IMG_CRANE}
+          command: ["/busybox/sh", "-c"]
+          args:
+          - |
+            set -e
+            /ko-app/crane export --platform linux/amd64 "$SIDECAR_IMAGE" - | /busybox/tar -xOf - app/pd-sidecar > /opt/llm-d-bins/pd-sidecar
+            chmod +x /opt/llm-d-bins/pd-sidecar
+          env:
+          # Bump this tag (in deploy/deploy.env) to change the sidecar version a
+          # recreated pod boots with. Must be an anonymously-pullable (public) image.
+          - name: SIDECAR_IMAGE
+            value: "${IMG_SIDECAR}"
+          volumeMounts:
+          - mountPath: /opt/llm-d-bins
+            name: llm-d-bins
         containers:
         - name: ray-worker
           image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration
@@ -277,6 +303,13 @@ spec:
           - name: VERL_LOGGING_LEVEL
             value: "INFO"
 
+          # --- Sidecar binary path (filled by the fetch-sidecar init container) ---
+          # The sidecar is not baked into the verl image; fetch-sidecar extracts it
+          # from the separate sidecar image into /opt/llm-d-bins. Decode replicas
+          # launch whatever binary is here (PD mode only).
+          - name: VERL_SIDECAR_BINARY
+            value: "/opt/llm-d-bins/pd-sidecar"
+
           # --- vLLM / Ray settings ---
           - name: VLLM_USE_V1
             value: "1"
@@ -325,12 +358,19 @@ spec:
             #  memory: "96G"
             #  nvidia.com/gpu: "4"
           volumeMounts:
+          - mountPath: /opt/llm-d-bins
+            name: llm-d-bins
           - mountPath: /dev/shm
             name: dshm
           - mountPath: /etc/llmd-configs
             name: llmd-epp-configs
             readOnly: true
         volumes:
+        # Shared scratch: fetch-sidecar (init) extracts the sidecar binary here and
+        # decode replicas read it at /opt/llm-d-bins (VERL_SIDECAR_BINARY). Starts
+        # empty on a fresh pod.
+        - name: llm-d-bins
+          emptyDir: {}
         - name: dshm
           emptyDir:
             medium: Memory

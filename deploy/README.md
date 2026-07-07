@@ -44,11 +44,12 @@ The manifest template itself only needs edits for node/GPU layout:
   has a `NotIn` list excluding known-faulty GPU hosts (e.g. `pokprod-b93r44s3`) - edit that
   list for your cluster.
 
-Neither the EPP nor the Envoy binary is baked into the verl image. The `fetch-binaries` init
-container in `ray-cluster.yaml.tmpl` extracts both from the public images set in `deploy.env`
-(`IMG_EPP`, `IMG_ENVOY`) on pod start; use `scripts/utils/push-epp.sh` to push a new EPP into a
+None of the EPP, Envoy, or sidecar binaries are baked into the verl image. On the head the
+`fetch-binaries` init container extracts the EPP and Envoy (`IMG_EPP`, `IMG_ENVOY`); on the
+worker the `fetch-sidecar` init container extracts the sidecar (`IMG_SIDECAR`) - all set in
+`deploy.env` and pulled on pod start. Use `scripts/utils/push-epp.sh` to push a new EPP into a
 running pod without recreating it. See
-[Supplying the EPP and Envoy at runtime](../README.md#supplying-the-epp-and-envoy-at-runtime)
+[Supplying the EPP, Envoy, and sidecar at runtime](../README.md#supplying-the-epp-envoy-and-sidecar-at-runtime)
 in the main README.
 
 ## Step 2 - Deploy

@@ -20,10 +20,12 @@ from llm_d_rl_verl_integration.endpoints import model_label as model_label_for_e
 
 logger = logging.getLogger(__name__)
 
-# Overridable via VERL_SIDECAR_BINARY for the same runtime-injection reason as
-# the EPP binary (see llmd_actor.py): swap the sidecar without a verl rebuild.
+# The sidecar is injected at runtime (fetch-sidecar initContainer on the worker)
+# into /opt/llm-d-bins, the same way the EPP/Envoy binaries are on the head, so
+# swapping it never rebuilds the verl image. The manifest sets VERL_SIDECAR_BINARY;
+# the default mirrors the init container's extract path.
 _SIDECAR_BINARY = os.environ.get(
-    "VERL_SIDECAR_BINARY", "/usr/local/bin/llm-d-routing-sidecar"
+    "VERL_SIDECAR_BINARY", "/opt/llm-d-bins/pd-sidecar"
 )
 _DEFAULT_NIXL_BASE_PORT = 5600
 _VLLM_LOCAL_BIND_HOST = "127.0.0.1"

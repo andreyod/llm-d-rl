@@ -31,7 +31,7 @@ set +a
 render() {
   # Explicit var list keeps envsubst from touching the container-runtime
   # $EPP_IMAGE / $ENVOY_IMAGE in the crane args and the shell $ in postStart.
-  envsubst '${NAMESPACE} ${IMG_VERL} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY}' \
+  envsubst '${NAMESPACE} ${IMG_VERL} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY} ${IMG_SIDECAR}' \
     < ray-cluster.yaml.tmpl
 }
 

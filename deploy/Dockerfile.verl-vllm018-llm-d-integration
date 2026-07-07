@@ -2,8 +2,8 @@
 #
 # Differences from Dockerfile.llmd-vllm-v18-dev:
 #   - No local verl source COPY; verl is installed from a pinned git commit.
-#   - No Go build stage; EPP and sidecar binaries are copied from their
-#     published container images using multi-stage COPY --from.
+#   - No Go build stage and no binary COPY: the EPP, Envoy, and sidecar binaries
+#     are all supplied at runtime by init containers, not baked into this image.
 #
 # Build (from the repo root — no local source context required):
 #   podman build \
@@ -15,15 +15,12 @@
 #
 ARG BASE_IMAGE=verlai/verl:vllm018.dev1
 
-# Binary source images — must match the target platform so the executables run on the node.
-# TARGETPLATFORM is set automatically by `docker buildx build --platform <arch>`.
-# NOTE: no epp-source or envoy-source stage. The EPP and Envoy binaries are
-# intentionally NOT baked into this image; they are supplied at runtime from
-# SEPARATE images (see deploy/deploy.sh fetch-binaries initContainer,
-# push-epp.sh / VERL_EPP_BINARY / VERL_ENVOY_BINARY), so iterating on either
+# NOTE: no epp-source, envoy-source, or sidecar-source stage. The EPP, Envoy,
+# and sidecar binaries are intentionally NOT baked into this image; they are
+# supplied at runtime from SEPARATE images by init containers (EPP + Envoy on the
+# head via fetch-binaries, the sidecar on the worker via fetch-sidecar; see
+# deploy/ray-cluster.yaml.tmpl and deploy/deploy.env), so iterating on any of them
 # never rebuilds verl.
-FROM --platform=${TARGETPLATFORM} ghcr.io/ezrasilvera/llm-d-router-disagg-sidecar:burst-scorer AS sidecar-source
-
 FROM ${BASE_IMAGE}
 
 # --- veRL from pinned commit ---
@@ -44,12 +41,11 @@ RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
     python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
 
 # --- Llmd binaries ---
-# EPP and Envoy are intentionally NOT copied here. They are supplied at runtime
-# from separate images (fetch-binaries initContainer -> /opt/llm-d-bins, selected
-# via VERL_EPP_BINARY / VERL_ENVOY_BINARY; push-epp.sh can overwrite the EPP
-# live), so iterating on either never rebuilds this 28 GB image. Only the sidecar
-# stays baked in (override it via VERL_SIDECAR_BINARY if you iterate on it too).
-COPY --from=sidecar-source /app/pd-sidecar /usr/local/bin/llm-d-routing-sidecar
+# EPP, Envoy, and the sidecar are intentionally NOT copied here. All three are
+# supplied at runtime from separate images by init containers into /opt/llm-d-bins,
+# selected via VERL_EPP_BINARY / VERL_ENVOY_BINARY (head) and VERL_SIDECAR_BINARY
+# (worker); push-epp.sh can overwrite the EPP live. So iterating on any of them
+# never rebuilds this ~28 GB image.
 
 
 # --- Vllm fixes ---

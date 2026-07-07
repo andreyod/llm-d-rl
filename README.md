@@ -148,14 +148,12 @@ Log files on the pod: `/tmp/epp.log`, `/tmp/envoy.log`, `/tmp/sidecar-decode-{ra
 
 ---
 
-## Supplying the EPP and Envoy at runtime
+## Supplying the EPP, Envoy, and sidecar at runtime
 
-Neither the EPP nor the Envoy binary is baked into the verl image (a ~28 GB build), so iterating on either never triggers a verl rebuild. `LlmdActor` launches whatever binaries `VERL_EPP_BINARY` (default `/usr/local/bin/epp`) and `VERL_ENVOY_BINARY` (default `/usr/local/bin/envoy`) point at.
+None of the EPP, Envoy, or sidecar binaries are baked into the verl image (a ~28 GB build), so iterating on any of them never triggers a verl rebuild. On the **head**, `LlmdActor` launches the EPP and Envoy via `VERL_EPP_BINARY` and `VERL_ENVOY_BINARY`; on the **worker**, decode replicas launch the sidecar via `VERL_SIDECAR_BINARY` (`/opt/llm-d-bins/pd-sidecar`, PD mode only).
 
-Two ways to get the binaries onto the pod:
+Two ways to get the binaries onto the pods:
 
-- **On pod start (cold path):** the `fetch-binaries` init container in `deploy/ray-cluster.yaml.tmpl` extracts `/app/epp` from a separate public EPP image and `/usr/local/bin/envoy` from a separate Envoy image (both set in `deploy/deploy.env`) into a shared `llm-d-bins` emptyDir. Bump the image tag in `deploy.env` and recreate the pod to change the EPP or Envoy version.
+- **On pod start (cold path):** the `fetch-binaries` init container (head) extracts `/app/epp` from a separate public EPP image and `/usr/local/bin/envoy` from a separate Envoy image into the head's `llm-d-bins` emptyDir, and the `fetch-sidecar` init container (worker) extracts `/app/pd-sidecar` from the sidecar image into the worker's `llm-d-bins`. All image refs live in `deploy/deploy.env` (`IMG_EPP`, `IMG_ENVOY`, `IMG_SIDECAR`); bump a tag and recreate the pod to change that binary's version.
 - **Into a running pod (fast inner loop, EPP only):** `scripts/utils/push-epp.sh` builds the EPP from a local checkout (or extracts it from an image with `--from-image REF`) and `kubectl cp`s it to `/opt/llm-d-bins/epp` — no verl rebuild, no pod recreation. Restart the training run to pick it up (EPP is started once per job).
-
-Only the sidecar stays baked into the image; override its path at runtime via `VERL_SIDECAR_BINARY` if needed.
 

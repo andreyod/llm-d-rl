@@ -2,9 +2,9 @@
 
 How to run an instrumented experiment on a fresh cluster/pod.
 
-Namespace: `ezraverl`. Helpers used throughout:
+Namespace: taken from `deploy/deploy.env` (the single source of truth). Helpers used throughout:
 ```bash
-NS=ezraverl
+NS=$(. deploy/deploy.env; echo "$NAMESPACE")   # set NAMESPACE in deploy/deploy.env first
 H=$(kubectl get pod -n $NS -l ray.io/node-type=head   -o jsonpath='{.items[0].metadata.name}')
 W=$(kubectl get pod -n $NS -l ray.io/node-type=worker -o jsonpath='{.items[0].metadata.name}')
 REPO=~/workspace/github.com/ezrasilvera/verl-llm-d-integration
@@ -44,7 +44,7 @@ replica ~1.5s → `/tmp/vllm_metrics.csv`. EPP-only (baseline writes no endpoint
 Requires pyyaml (present in the image).
 
 ```bash
-kubectl cp $REPO/tools/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
+kubectl cp $REPO/scripts/benchmarks/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
 ```
 
 **Important caveat:** vLLM refreshes `prefix_cache_{hits,queries}_total` only every ~70–180s,
@@ -53,7 +53,7 @@ so per-step windowed deltas are unusable. Report prefix-cache hit rate as a whol
 ## 3. Launch script — head only
 
 ```bash
-kubectl cp $REPO/run_test.sh $NS/$H:/tmp/run_test.sh
+kubectl cp $REPO/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
 ```
 
 Usage on the pod:
@@ -67,8 +67,8 @@ kubectl exec -n $NS $H -- bash /tmp/run_test.sh --mode epp --steps 20 --tp 2 --n
 ```
 
 The EPP config (plugins) is loaded from the file set by `rollout.custom.epp_config_file`.
-In k8s this is mounted from the `llmd-epp-configs` ConfigMap (built from `examples/epp-config.yaml`
-or `examples/epp-config-pd.yaml` — see `examples/README.md` Step 2).
+In k8s this is mounted from the `llmd-epp-configs` ConfigMap (built from `deploy/epp-config.yaml`
+or `deploy/epp-config-pd.yaml` — see `deploy/README.md` Step 2).
 
 ## 4. Clean + start scraper + launch (head)
 
@@ -105,6 +105,6 @@ Collected per run: `console.log`, `logs/<jsonl>`, `generations/train/`, `reqlog_
 ## Teardown (free GPUs)
 
 ```bash
-kubectl delete -f examples/ray-cluster.yaml
+bash deploy/deploy.sh delete
 # or scale down workerGroupSpecs replicas to 0
 ```

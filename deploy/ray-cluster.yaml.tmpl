@@ -2,7 +2,7 @@ apiVersion: ray.io/v1
 kind: RayCluster
 metadata:
   name: verl-cluster
-  namespace: ezraverl
+  namespace: ${NAMESPACE}
 spec:
   rayVersion: '2.47.1'
   headGroupSpec:
@@ -22,31 +22,39 @@ spec:
                   ray.io/cluster: verl-cluster
                   ray.io/node-type: worker
               topologyKey: kubernetes.io/hostname
-        # EPP is NOT baked into the verl image. At pod start the fetch-epp init
-        # container pulls the SEPARATE (public) EPP image with crane and extracts
-        # its /app/epp binary into the shared epp-bin volume, which ray-head then
-        # launches via VERL_EPP_BINARY (/opt/epp-bin/epp). So iterating on the EPP
-        # is: push a new EPP image tag + recreate this pod - the verl image never
-        # rebuilds. push-epp.sh covers the faster no-recreate inner loop.
+        # Neither the EPP nor Envoy is baked into the verl image. At pod start the
+        # fetch-binaries init container pulls the SEPARATE (public) EPP and Envoy
+        # images with crane and extracts their binaries into the shared llm-d-bins
+        # volume, which ray-head then launches via VERL_EPP_BINARY
+        # (/opt/llm-d-bins/epp) and VERL_ENVOY_BINARY (/opt/llm-d-bins/envoy). So
+        # iterating on either is: bump its image tag + recreate this pod - the verl
+        # image never rebuilds. push-epp.sh covers the faster no-recreate EPP loop.
         initContainers:
-        - name: fetch-epp
+        - name: fetch-binaries
           # Generic registry tool pinned by digest (go-containerregistry crane
           # :debug, which ships /busybox/sh + /busybox/tar). Never rebuilt.
-          image: gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252
+          image: ${IMG_CRANE}
           command: ["/busybox/sh", "-c"]
           args:
-          - '/ko-app/crane export --platform linux/amd64 "$EPP_IMAGE" - | /busybox/tar -xOf - app/epp > /opt/epp-bin/epp && chmod +x /opt/epp-bin/epp'
+          - |
+            set -e
+            /ko-app/crane export --platform linux/amd64 "$EPP_IMAGE"   - | /busybox/tar -xOf - app/epp             > /opt/llm-d-bins/epp
+            /ko-app/crane export --platform linux/amd64 "$ENVOY_IMAGE" - | /busybox/tar -xOf - usr/local/bin/envoy > /opt/llm-d-bins/envoy
+            chmod +x /opt/llm-d-bins/epp /opt/llm-d-bins/envoy
           env:
-          # The only knob: bump this tag to change the EPP version a recreated
-          # pod boots with. Must be an anonymously-pullable (public) image.
+          # Bump these tags (in deploy/deploy.env) to change the EPP / Envoy
+          # version a recreated pod boots with. Must be anonymously-pullable
+          # (public) images.
           - name: EPP_IMAGE
-            value: "ghcr.io/ezrasilvera/llm-d-router-endpoint-picker:burst-longest"
+            value: "${IMG_EPP}"
+          - name: ENVOY_IMAGE
+            value: "${IMG_ENVOY}"
           volumeMounts:
-          - mountPath: /opt/epp-bin
-            name: epp-bin
+          - mountPath: /opt/llm-d-bins
+            name: llm-d-bins
         containers:
         - name: ray-head
-          image: ghcr.io/ezrasilvera/verl:burst-scorer # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
+          image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -58,7 +66,7 @@ spec:
                   exec > /tmp/setup_log.txt 2>&1
                   echo "Starting setup..."
 
-                  pip install --no-deps git+https://github.com/NaomiEisen/llm-d-rl-verl-integration
+                  pip install --no-deps git+https://github.com/ezrasilvera/verl-llm-d-integration
 
                   # Prepare data and prefetch the model.
                   mkdir -p /tmp/verl/hf_cache/datasets
@@ -105,12 +113,14 @@ spec:
           - name: VERL_FILE_LOGGER_ROOT
             value: "/tmp/verl/logs"
 
-          # --- EPP binary path (filled by the fetch-epp init container) ---
-          # EPP is not in the verl image; fetch-epp extracts it from the separate
-          # EPP image into /opt/epp-bin, and push-epp.sh can overwrite it live.
-          # The actor launches whatever binary is here.
+          # --- EPP / Envoy binary paths (filled by the fetch-binaries init container) ---
+          # Neither binary is in the verl image; fetch-binaries extracts them from
+          # their separate images into /opt/llm-d-bins, and push-epp.sh can
+          # overwrite the EPP live. The actor launches whatever binaries are here.
           - name: VERL_EPP_BINARY
-            value: "/opt/epp-bin/epp"
+            value: "/opt/llm-d-bins/epp"
+          - name: VERL_ENVOY_BINARY
+            value: "/opt/llm-d-bins/envoy"
 
           # --- vLLM / Ray settings ---
           - name: VLLM_USE_V1
@@ -156,8 +166,8 @@ spec:
             name: envoy
           volumeMounts:
           # Writable (not readOnly): push-epp.sh kubectl-cp's into here at runtime.
-          - mountPath: /opt/epp-bin
-            name: epp-bin
+          - mountPath: /opt/llm-d-bins
+            name: llm-d-bins
           - mountPath: /dev/shm
             name: dshm
           - mountPath: /etc/llmd-configs
@@ -171,10 +181,11 @@ spec:
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs
-        # Shared scratch: fetch-epp (init) extracts the EPP binary here and
-        # ray-head reads it at /opt/epp-bin (VERL_EPP_BINARY); push-epp.sh can
-        # overwrite it live. Starts empty on a fresh pod.
-        - name: epp-bin
+        # Shared scratch: fetch-binaries (init) extracts the EPP and Envoy binaries
+        # here and ray-head reads them at /opt/llm-d-bins (VERL_EPP_BINARY /
+        # VERL_ENVOY_BINARY); push-epp.sh can overwrite the EPP live. Starts empty
+        # on a fresh pod.
+        - name: llm-d-bins
           emptyDir: {}
 
   workerGroupSpecs:
@@ -207,7 +218,7 @@ spec:
                   - pokprod-b93r44s3
         containers:
         - name: ray-worker
-          image: ghcr.io/ezrasilvera/verl:burst-scorer # Built from docker/Dockerfile.verl-vllm018-llm-d-integration
+          image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -217,7 +228,7 @@ spec:
                 - -c
                 - |
                   exec > /tmp/setup_log.txt 2>&1
-                  pip install --no-deps git+https://github.com/NaomiEisen/llm-d-rl-verl-integration
+                  pip install --no-deps git+https://github.com/ezrasilvera/verl-llm-d-integration
                   mkdir -p /tmp/verl/hf_cache/datasets
                   python3 /opt/verl/examples/data_preprocess/gsm8k.py --local_save_dir /tmp/verl/data/gsm8k
                   # Full model weights for FSDP training + vLLM rollout

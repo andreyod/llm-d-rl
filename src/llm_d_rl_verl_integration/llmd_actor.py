@@ -15,18 +15,17 @@ from llm_d_rl_verl_integration.endpoints import write_pd_endpoints, write_rollou
 logger = logging.getLogger(__name__)
 
 # Path to the EPP binary. Overridable via VERL_EPP_BINARY so the binary can be
-# injected at runtime (fetch-epp initContainer / push-epp.sh) instead of being
+# injected at runtime (fetch-binaries initContainer / push-epp.sh) instead of being
 # baked into the verl image; iterating on the EPP then needs no verl rebuild.
 _EPP_BINARY = os.environ.get("VERL_EPP_BINARY", "/usr/local/bin/epp")
-_ENVOY_BINARY = "/usr/local/bin/envoy"
+# Envoy is injected at runtime (fetch-binaries initContainer) instead of baked
+# into the verl image, same as the EPP; iterating on Envoy then needs no rebuild.
+_ENVOY_BINARY = os.environ.get("VERL_ENVOY_BINARY", "/usr/local/bin/envoy")
 _EPP_LOG = "/tmp/epp.log"
 _ENVOY_LOG = "/tmp/envoy.log"
 _DEFAULT_EPP_GRPC_PORT = 9002
 _DEFAULT_EPP_HEALTH_PORT = 9003
 _DEFAULT_ENVOY_PORT = 8081
-_BUNDLED_ENVOY_CONFIG = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "llmd_stack", "envoy.yaml"
-)
 
 
 async def _wait_port(host: str, port: int, timeout: float = 120.0) -> None:
@@ -127,7 +126,9 @@ class LlmdActor:
         return grpc_port, health_port
 
     async def _start_envoy(self, custom: dict) -> int:
-        envoy_config = custom.get("envoy_config", _BUNDLED_ENVOY_CONFIG)
+        envoy_config = custom.get("envoy_config")
+        if not envoy_config:
+            raise RuntimeError("rollout.custom.envoy_config is required")
         envoy_port = int(custom.get("envoy_port", _DEFAULT_ENVOY_PORT))
 
         if not os.path.isfile(_ENVOY_BINARY):

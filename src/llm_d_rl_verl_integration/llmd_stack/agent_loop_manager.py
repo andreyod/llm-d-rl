@@ -6,11 +6,11 @@ YAML config (no verl code changes needed):
     actor_rollout_ref:
       rollout:
         agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.EnvoyAgentLoopManager
+          agent_loop_manager_class: llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.LlmdAgentLoopManager
         custom:
           epp_config_file: /path/to/config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
-          # envoy_config: /path/to/envoy.yaml  # optional, defaults to bundled
+          envoy_config: /path/to/envoy.yaml    # required
           # envoy_port: 8081                   # optional
 """
 
@@ -21,7 +21,7 @@ import logging
 import ray
 from omegaconf import OmegaConf
 
-from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdAgentLoopManager
+from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopManager
 from llm_d_rl_verl_integration.llmd_actor import LlmdActor
 from llm_d_rl_verl_integration.llmd_stack.llm_client import EnvoyLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
@@ -41,7 +41,7 @@ RolloutReplicaRegistry.register("vllm-llmd-pd", _load_llmd_pd)
 logger = logging.getLogger(__name__)
 
 
-class EnvoyAgentLoopManager(LlmdAgentLoopManager):
+class LlmdAgentLoopManager(LlmdBaseAgentLoopManager):
     """Starts EPP + Envoy via a Ray actor pinned to the head node, then routes via Envoy."""
 
     def _on_servers_ready(self, server_addresses: list[str]) -> None:
@@ -63,7 +63,7 @@ class EnvoyAgentLoopManager(LlmdAgentLoopManager):
                 with_envoy=True,
             )
         )
-        logger.info("[EnvoyAgentLoopManager] Envoy ready at %s", self._envoy_address)
+        logger.info("[LlmdAgentLoopManager] Envoy ready at %s", self._envoy_address)
 
     def _create_llm_client(self) -> LLMServerClient:
         return EnvoyLLMClient(

@@ -1,7 +1,7 @@
 # Running the KubeRay Example
 
 Single-node GRPO training on GSM8K with Qwen3-4B using the llm-d RL verl integration.
-As shipped, `ray-cluster.yaml` has the **4-GPU** worker option active; an 8-GPU option is
+As shipped, `ray-cluster.yaml.tmpl` has the **4-GPU** worker option active; an 8-GPU option is
 also provided (commented out in the manifest). The run commands below are grouped the same
 way: the first set targets 8 GPUs, and a [4-GPU Option](#4-gpu-option) section follows. Pick
 the set that matches the worker `resources` block you enabled in the manifest.
@@ -14,19 +14,30 @@ the set that matches the worker `resources` block you enabled in the manifest.
 ## Directory structure
 
 ```
-examples/
-  configmap.yaml         # Kubernetes ConfigMap bundling both EPP configs
-  ray-cluster.yaml       # RayCluster definition
-  setting-kuberay.md     # KubeRay operator / CRD install instructions
+deploy/
+  epp-config.yaml         # EPP config — standard prefix-cache routing (source of truth)
+  epp-config-pd.yaml      # EPP config — PD-aware routing (source of truth)
+  envoy.yaml              # Envoy proxy config for the llm-d stack integration (source of truth)
+  configmap.yaml          # Reference stub; the ConfigMap is built by deploy.sh
+  ray-cluster.yaml.tmpl   # RayCluster definition (template; values come from deploy.env)
+  deploy.env              # Single source of truth for the namespace and every runtime image
+  deploy.sh               # Render ray-cluster.yaml.tmpl with deploy.env, create ConfigMap, apply/delete
+  setting-kuberay.md      # KubeRay operator / CRD install instructions
 ```
 
-## Step 1 - Edit the deployment manifests
+## Step 1 - Set deploy.env and edit the manifest
 
-`configmap.yaml` and `ray-cluster.yaml` both default to the `ezraverl` namespace. Adjust to
-match your environment:
+All deployment config that changes per environment lives in `deploy.env`:
 
-- **Namespace** - replace `ezraverl` (appears in each manifest's `metadata.namespace`, and
-  the ConfigMap reference) with your target namespace.
+- **Namespace (required)** - set `NAMESPACE` in `deploy.env`. It has no default;
+  `deploy.sh`, `push-epp.sh`, and `rl_orchestrate.sh` all read it from here and refuse to run
+  until it is set. This is the single place the namespace is defined.
+- **Images** - every runtime image (verl, crane, EPP, Envoy) is defined in `deploy.env` too.
+  Edit tags there rather than in the manifest; `deploy.sh` substitutes them (and `NAMESPACE`)
+  into `ray-cluster.yaml.tmpl` at apply time.
+
+The manifest template itself only needs edits for node/GPU layout:
+
 - **GPU count** - the worker `resources` block ships with the 4-GPU option active and the
   8-GPU option commented out. Enable whichever matches your node.
 - **Node placement** - the head co-locates onto the worker's node via `podAffinity`, and the
@@ -34,18 +45,27 @@ match your environment:
   has a `NotIn` list excluding known-faulty GPU hosts (e.g. `pokprod-b93r44s3`) - edit that
   list for your cluster.
 
-The EPP binary is **not** baked into the verl image. The `fetch-epp` init container in
-`ray-cluster.yaml` extracts it from the public image set by its `EPP_IMAGE` env on pod start;
-use `push-epp.sh` (repo root) to push a new EPP into a running pod without recreating it. See
-[Supplying the EPP at runtime](../README.md#supplying-the-epp-at-runtime) in the main README.
+Neither the EPP nor the Envoy binary is baked into the verl image. The `fetch-binaries` init
+container in `ray-cluster.yaml.tmpl` extracts both from the public images set in `deploy.env`
+(`IMG_EPP`, `IMG_ENVOY`) on pod start; use `scripts/utils/push-epp.sh` to push a new EPP into a
+running pod without recreating it. See
+[Supplying the EPP and Envoy at runtime](../README.md#supplying-the-epp-and-envoy-at-runtime)
+in the main README.
 
 ## Step 2 - Deploy
 
+`deploy.sh apply` does everything: it builds the `llmd-epp-configs` ConfigMap from the
+standalone config files (`epp-config.yaml`, `epp-config-pd.yaml`, and `envoy.yaml` are the
+source of truth - **do not** apply `configmap.yaml` directly, it has no `data:` block) and
+applies the rendered cluster manifest, both into the namespace from `deploy.env`:
+
 ```bash
-# ConfigMap must exist before the cluster starts (pods mount it at /etc/llmd-configs/)
-kubectl apply -f examples/configmap.yaml
-kubectl apply -f examples/ray-cluster.yaml
+bash deploy/deploy.sh apply
 ```
+
+Useful sub-commands: `deploy.sh configmap` ((re)create just the ConfigMap),
+`deploy.sh render` (print the rendered manifest without applying), `deploy.sh delete`
+(tear down the cluster).
 
 Wait for both pods to be ready:
 ```bash
@@ -79,7 +99,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.default_local_dir=/tmp/checkpoints \
     trainer.total_training_steps=50 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     actor_rollout_ref.rollout.disable_log_stats=False \
@@ -107,7 +127,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.total_training_steps=80 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
     +actor_rollout_ref.model.external_lib=llm_d_rl_verl_integration.register_pd \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config-pd.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     +actor_rollout_ref.rollout.custom.sidecar_connector=nixlv2 \
@@ -130,7 +150,8 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.default_local_dir=/tmp/checkpoints \
     trainer.total_training_steps=50 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.EnvoyAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.LlmdAgentLoopManager \
+    +actor_rollout_ref.rollout.custom.envoy_config=/etc/llmd-configs/envoy.yaml \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     actor_rollout_ref.rollout.disable_log_stats=False \
@@ -158,7 +179,8 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.total_training_steps=80 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
     +actor_rollout_ref.model.external_lib=llm_d_rl_verl_integration.register_pd \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.EnvoyAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.LlmdAgentLoopManager \
+    +actor_rollout_ref.rollout.custom.envoy_config=/etc/llmd-configs/envoy.yaml \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config-pd.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     +actor_rollout_ref.rollout.custom.sidecar_connector=nixlv2 \
@@ -169,7 +191,11 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
 
 ## EPP config
 
-The two configs bundled in `examples/configmap.yaml` (`epp-config.yaml` and `epp-config-pd.yaml`) are starting points. Customize the scorer weights or swap plugins to tune routing for your workload. The path is passed per run via the Hydra override `+actor_rollout_ref.rollout.custom.epp_config_file=...` (see the commands above) - you can mount your own ConfigMap or point to any file accessible on the head node.
+`deploy/epp-config.yaml` (standard) and `deploy/epp-config-pd.yaml` (PD disaggregated) are the starting-point configs. Customize scorer weights or swap plugins to tune routing for your workload.
+
+The path is passed per run via `+actor_rollout_ref.rollout.custom.epp_config_file=...` (see the commands above). You can point to any file accessible on the head node — mount your own ConfigMap, copy a file to `/tmp`, or use the sample directly in non-k8s environments.
+
+To update a running cluster after editing a config file, re-run the `kubectl create configmap` command from Step 2 above, then recreate the pod.
 
 See the [main README](../README.md) for the full config reference and architecture overview.
 
@@ -195,7 +221,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.default_local_dir=/tmp/checkpoints \
     trainer.total_training_steps=50 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     actor_rollout_ref.rollout.disable_log_stats=False \
@@ -227,7 +253,7 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.total_training_steps=80 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
     +actor_rollout_ref.model.external_lib=llm_d_rl_verl_integration.register_pd \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config-pd.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     +actor_rollout_ref.rollout.custom.sidecar_connector=nixlv2 \
@@ -253,7 +279,8 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.default_local_dir=/tmp/checkpoints \
     trainer.total_training_steps=50 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.EnvoyAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.LlmdAgentLoopManager \
+    +actor_rollout_ref.rollout.custom.envoy_config=/etc/llmd-configs/envoy.yaml \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     actor_rollout_ref.rollout.disable_log_stats=False \
@@ -284,7 +311,8 @@ bash /opt/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     trainer.total_training_steps=80 \
     '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
     +actor_rollout_ref.model.external_lib=llm_d_rl_verl_integration.register_pd \
-    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.EnvoyAgentLoopManager \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_stack.agent_loop_manager.LlmdAgentLoopManager \
+    +actor_rollout_ref.rollout.custom.envoy_config=/etc/llmd-configs/envoy.yaml \
     +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config-pd.yaml \
     +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
     +actor_rollout_ref.rollout.custom.sidecar_connector=nixlv2 \

@@ -7,7 +7,7 @@ To use, set in the training YAML config:
       rollout:
         name: vllm
         agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager
+          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
         custom:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
@@ -21,7 +21,7 @@ To use, set in the training YAML config:
           prefill_replicas: 2       # do NOT set enabled=True (avoids NotImplementedError from verl)
           decode_replicas: 2
         agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.EPPAgentLoopManager
+          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
         custom:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
@@ -35,7 +35,7 @@ import logging
 import ray
 from omegaconf import OmegaConf
 
-from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdAgentLoopManager
+from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopManager
 from llm_d_rl_verl_integration.llmd_actor import LlmdActor
 from llm_d_rl_verl_integration.epp_router.llm_client import EPPLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
@@ -53,7 +53,7 @@ RolloutReplicaRegistry.register("vllm-llmd-pd", _load_llmd_pd)
 logger = logging.getLogger(__name__)
 
 
-class EPPAgentLoopManager(LlmdAgentLoopManager):
+class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
     """Launches EPP subprocess (via a Ray actor) and swaps in EPPLLMClient.
 
     Server actor handles are looked up by Ray actor name using the convention
@@ -91,7 +91,7 @@ class EPPAgentLoopManager(LlmdAgentLoopManager):
                     f"Could not find Ray actor {actor_name!r} for server {addr}. "
                     "Make sure the rollout backend is vllm and servers are started."
                 )
-        logger.info("[EPPAgentLoopManager] address→handle map: %s", list(self._address_to_handle.keys()))
+        logger.info("[LlmdRouterAgentLoopManager] address→handle map: %s", list(self._address_to_handle.keys()))
 
         # Launch EPP via a Ray actor pinned to the head node.
         epp_actor = LlmdActor.options(
@@ -107,7 +107,7 @@ class EPPAgentLoopManager(LlmdAgentLoopManager):
             )
         )
         self._epp_actor = epp_actor
-        logger.info("[EPPAgentLoopManager] EPP ready at %s", self._grpc_addr)
+        logger.info("[LlmdRouterAgentLoopManager] EPP ready at %s", self._grpc_addr)
 
     def _create_llm_client(self) -> LLMServerClient:
         return EPPLLMClient(

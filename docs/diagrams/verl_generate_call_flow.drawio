@@ -103,7 +103,7 @@
         <mxCell id="8Al0gIIsXu1oOA2NV_hs-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3f4f6;strokeColor=#6b7280;strokeWidth=1.5;fontSize=14;fontFamily=Helvetica;" value="SingleTurnAgentLoop /&lt;br/&gt;ToolAgentLoop" vertex="1">
           <mxGeometry height="60" width="265" x="90" y="255" as="geometry" />
         </mxCell>
-        <mxCell id="8Al0gIIsXu1oOA2NV_hs-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f0f4ff;strokeColor=#6b7280;strokeWidth=1.5;dashed=1;verticalAlign=top;align=left;spacingTop=6;spacingLeft=10;fontSize=14;fontFamily=Helvetica;fontStyle=1;" value="LlmdAgentLoopManager(AgentLoopManager)" vertex="1">
+        <mxCell id="8Al0gIIsXu1oOA2NV_hs-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f0f4ff;strokeColor=#6b7280;strokeWidth=1.5;dashed=1;verticalAlign=top;align=left;spacingTop=6;spacingLeft=10;fontSize=14;fontFamily=Helvetica;fontStyle=1;" value="LlmdBaseAgentLoopManager(AgentLoopManager)" vertex="1">
           <mxGeometry height="430" width="440" x="1262" y="16" as="geometry" />
         </mxCell>
         <mxCell id="8Al0gIIsXu1oOA2NV_hs-5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#6b7280;strokeWidth=1.5;dashed=1;verticalAlign=top;align=left;spacingTop=6;spacingLeft=10;fontSize=13;fontFamily=Helvetica;" value="Rollout Pool" vertex="1">

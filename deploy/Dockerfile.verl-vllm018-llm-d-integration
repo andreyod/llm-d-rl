@@ -7,7 +7,7 @@
 #
 # Build (from the repo root — no local source context required):
 #   podman build \
-#     -f docker/Dockerfile.verl-vllm018-llm-d-integration \
+#     -f deploy/Dockerfile.verl-vllm018-llm-d-integration \
 #     --platform linux/amd64 \
 #     --build-arg VERL_COMMIT=<commit-sha> \
 #     -t <your-registry>/verl:vllm018-llm-d-integration \
@@ -17,11 +17,12 @@ ARG BASE_IMAGE=verlai/verl:vllm018.dev1
 
 # Binary source images — must match the target platform so the executables run on the node.
 # TARGETPLATFORM is set automatically by `docker buildx build --platform <arch>`.
-# NOTE: no epp-source stage. The EPP binary is intentionally NOT baked into this
-# image; it is supplied at runtime from a SEPARATE EPP image or binary (see
-# push-epp.sh / VERL_EPP_BINARY), so iterating on the EPP never rebuilds verl.
+# NOTE: no epp-source or envoy-source stage. The EPP and Envoy binaries are
+# intentionally NOT baked into this image; they are supplied at runtime from
+# SEPARATE images (see deploy/deploy.sh fetch-binaries initContainer,
+# push-epp.sh / VERL_EPP_BINARY / VERL_ENVOY_BINARY), so iterating on either
+# never rebuilds verl.
 FROM --platform=${TARGETPLATFORM} ghcr.io/ezrasilvera/llm-d-router-disagg-sidecar:burst-scorer AS sidecar-source
-FROM --platform=${TARGETPLATFORM} docker.io/envoyproxy/envoy:distroless-v1.33.2 AS envoy-source
 
 FROM ${BASE_IMAGE}
 
@@ -43,13 +44,12 @@ RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
     python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
 
 # --- Llmd binaries ---
-# EPP is intentionally NOT copied here. It is supplied at runtime from a separate
-# EPP image or binary (push-epp.sh -> /opt/epp-bin, selected via VERL_EPP_BINARY),
-# so iterating on the EPP never rebuilds this 28 GB image. Sidecar/envoy are
-# stable and stay baked in (override the sidecar via VERL_SIDECAR_BINARY if you
-# iterate on it too).
+# EPP and Envoy are intentionally NOT copied here. They are supplied at runtime
+# from separate images (fetch-binaries initContainer -> /opt/llm-d-bins, selected
+# via VERL_EPP_BINARY / VERL_ENVOY_BINARY; push-epp.sh can overwrite the EPP
+# live), so iterating on either never rebuilds this 28 GB image. Only the sidecar
+# stays baked in (override it via VERL_SIDECAR_BINARY if you iterate on it too).
 COPY --from=sidecar-source /app/pd-sidecar /usr/local/bin/llm-d-routing-sidecar
-COPY --from=envoy-source /usr/local/bin/envoy /usr/local/bin/envoy
 
 
 # --- Vllm fixes ---

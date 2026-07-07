@@ -2,7 +2,10 @@
 # Autonomous A/B orchestrator: wait Run A (EPP, already running) -> collect ->
 # launch Run B (baseline) -> collect. One auto-retry per run on failure.
 set -uo pipefail
-NS=ezraverl
+# Namespace: single source of truth is deploy/deploy.env (mandatory, no default).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NS="${NAMESPACE:-$(. "$SCRIPT_DIR/../../deploy/deploy.env" 2>/dev/null && echo "${NAMESPACE:-}")}"
+[ -n "$NS" ] || { echo "ERROR: NAMESPACE not set - edit deploy/deploy.env" >&2; exit 1; }
 BASE="/home/ezra/work/rl-work/verl-results"
 mkdir -p "$BASE"
 say(){ echo "[$(date '+%H:%M:%S')] $*"; }

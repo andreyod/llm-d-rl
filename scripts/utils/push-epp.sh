@@ -2,11 +2,11 @@
 # Supply the EPP to the running Ray head pod from a SEPARATE source - a freshly
 # built binary or a separate EPP image - without rebuilding the verl image.
 #
-# The verl image no longer contains the EPP. ray-cluster.yaml mounts an emptyDir
-# at /opt/epp-bin and sets VERL_EPP_BINARY=/opt/epp-bin/epp, so LlmdActor launches
-# whatever binary lands there. This script puts it there. The EPP is started once
-# per training job, so run this BEFORE launching a run (and again after any pod
-# recreation, since the emptyDir is wiped).
+# The verl image no longer contains the EPP. ray-cluster.yaml.tmpl mounts an emptyDir
+# at /opt/llm-d-bins and sets VERL_EPP_BINARY=/opt/llm-d-bins/epp, so LlmdActor
+# launches whatever binary lands there. This script puts it there. The EPP is
+# started once per training job, so run this BEFORE launching a run (and again
+# after any pod recreation, since the emptyDir is wiped).
 #
 # Usage:
 #   ./push-epp.sh                         # build cmd/epp from the scheduler repo
@@ -16,16 +16,22 @@
 # Override via env:
 #   SCHEDULER_REPO     scheduler checkout (default: ~/workspace/.../llm-d-inference-scheduler)
 #   CONTAINER_RUNTIME  docker|podman for --from-image (default: docker)
-#   NAMESPACE          k8s namespace (default: ezraverl)
+#   NAMESPACE          k8s namespace (default: NAMESPACE from deploy/deploy.env)
 #   HEAD_CONTAINER     container in the head pod (default: ray-head)
-#   EPP_DEST           path in the pod (default: /opt/epp-bin/epp; match VERL_EPP_BINARY)
+#   EPP_DEST           path in the pod (default: /opt/llm-d-bins/epp; match VERL_EPP_BINARY)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEDULER_REPO="${SCHEDULER_REPO:-$HOME/workspace/github.com/ezrasilvera/llm-d-inference-scheduler}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
-NAMESPACE="${NAMESPACE:-ezraverl}"
+# Namespace: single source of truth is deploy/deploy.env; a NAMESPACE env var
+# still overrides it. Mandatory - no built-in default.
+if [ -z "${NAMESPACE:-}" ] && [ -f "$SCRIPT_DIR/../../deploy/deploy.env" ]; then
+    NAMESPACE="$(. "$SCRIPT_DIR/../../deploy/deploy.env"; echo "${NAMESPACE:-}")"
+fi
+: "${NAMESPACE:?not set - edit NAMESPACE in deploy/deploy.env or pass NAMESPACE=...}"
 HEAD_CONTAINER="${HEAD_CONTAINER:-ray-head}"
-EPP_DEST="${EPP_DEST:-/opt/epp-bin/epp}"
+EPP_DEST="${EPP_DEST:-/opt/llm-d-bins/epp}"
 LOCAL_BIN="$(mktemp -t epp.XXXXXX)"
 trap 'rm -f "$LOCAL_BIN"' EXIT
 
@@ -66,6 +72,6 @@ cat <<EOF
 
 ==> Done. EPP is in place at $EPP_DEST (no verl rebuild, no pod recreation).
     Start / restart the verl run to pick it up (LlmdActor launches EPP once per
-    job). EPP config lives in the ConfigMap - kubectl apply examples/configmap.yaml
-    and restart the run to change it.
+    job). EPP config lives in the ConfigMap - rebuild it with deploy/deploy.sh
+    configmap and restart the run to change it.
 EOF

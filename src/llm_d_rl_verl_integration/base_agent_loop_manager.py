@@ -5,7 +5,7 @@ and optionally override ``_on_servers_ready()`` for extra setup work
 (e.g. launching EPP).
 
 No changes to verl core required — wire in via YAML:
-    actor_rollout_ref.rollout.agent.agent_loop_manager_class: epp_router.agent_loop_manager.EPPAgentLoopManager
+    actor_rollout_ref.rollout.agent.agent_loop_manager_class: epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from verl.workers.rollout.llm_server import LLMServerClient
 logger = logging.getLogger(__name__)
 
 
-class LlmdAgentLoopManager(AgentLoopManager):
+class LlmdBaseAgentLoopManager(AgentLoopManager):
     """Base class for llm-d AgentLoopManager variants.
 
     Lifecycle (runs in ``__init__``, before workers are spawned):
@@ -50,7 +50,7 @@ class LlmdAgentLoopManager(AgentLoopManager):
         )
 
         server_addresses: list[str] = ray.get(llm_client._load_balancer.get_all_servers.remote())
-        logger.info("[LlmdAgentLoopManager] servers: %s", server_addresses)
+        logger.info("[LlmdBaseAgentLoopManager] servers: %s", server_addresses)
 
         self._on_servers_ready(server_addresses)
 

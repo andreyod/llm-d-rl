@@ -2,9 +2,9 @@
 
 How to run an instrumented experiment on a fresh cluster/pod.
 
-Namespace: taken from `deploy/deploy.env` (the single source of truth). Helpers used throughout:
+Namespace: from the `NAMESPACE` environment variable (export it first). Helpers used throughout:
 ```bash
-NS=$(. deploy/deploy.env; echo "$NAMESPACE")   # set NAMESPACE in deploy/deploy.env first
+NS="${NAMESPACE:?export NAMESPACE=<your-namespace> first}"
 H=$(kubectl get pod -n $NS -l ray.io/node-type=head   -o jsonpath='{.items[0].metadata.name}')
 W=$(kubectl get pod -n $NS -l ray.io/node-type=worker -o jsonpath='{.items[0].metadata.name}')
 REPO=~/workspace/github.com/ezrasilvera/verl-llm-d-integration

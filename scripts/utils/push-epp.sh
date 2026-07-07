@@ -16,20 +16,15 @@
 # Override via env:
 #   SCHEDULER_REPO     scheduler checkout (default: ~/workspace/.../llm-d-inference-scheduler)
 #   CONTAINER_RUNTIME  docker|podman for --from-image (default: docker)
-#   NAMESPACE          k8s namespace (default: NAMESPACE from deploy/deploy.env)
+#   NAMESPACE          k8s namespace (REQUIRED; export NAMESPACE=<your-namespace>)
 #   HEAD_CONTAINER     container in the head pod (default: ray-head)
 #   EPP_DEST           path in the pod (default: /opt/llm-d-bins/epp; match VERL_EPP_BINARY)
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEDULER_REPO="${SCHEDULER_REPO:-$HOME/workspace/github.com/ezrasilvera/llm-d-inference-scheduler}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
-# Namespace: single source of truth is deploy/deploy.env; a NAMESPACE env var
-# still overrides it. Mandatory - no built-in default.
-if [ -z "${NAMESPACE:-}" ] && [ -f "$SCRIPT_DIR/../../deploy/deploy.env" ]; then
-    NAMESPACE="$(. "$SCRIPT_DIR/../../deploy/deploy.env"; echo "${NAMESPACE:-}")"
-fi
-: "${NAMESPACE:?not set - edit NAMESPACE in deploy/deploy.env or pass NAMESPACE=...}"
+# Namespace is per-user and comes from the environment. Mandatory, no default.
+: "${NAMESPACE:?not set - export NAMESPACE=<your-namespace>}"
 HEAD_CONTAINER="${HEAD_CONTAINER:-ray-head}"
 EPP_DEST="${EPP_DEST:-/opt/llm-d-bins/epp}"
 LOCAL_BIN="$(mktemp -t epp.XXXXXX)"

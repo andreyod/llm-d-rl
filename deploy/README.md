@@ -25,14 +25,13 @@ deploy/
   setting-kuberay.md      # KubeRay operator / CRD install instructions
 ```
 
-## Step 1 - Set deploy.env and edit the manifest
+## Step 1 - Set the namespace and images
 
-All deployment config that changes per environment lives in `deploy.env`:
-
-- **Namespace (required)** - set `NAMESPACE` in `deploy.env`. It has no default;
-  `deploy.sh`, `push-epp.sh`, and `rl_orchestrate.sh` all read it from here and refuse to run
-  until it is set. This is the single place the namespace is defined.
-- **Images** - every runtime image (verl, crane, EPP, Envoy) is defined in `deploy.env` too.
+- **Namespace (required)** - export it in your shell: `export NAMESPACE=<your-namespace>`.
+  It is not stored in a file (it is per-user, and keeping it out of `deploy.env` avoids
+  committing a personal namespace). `deploy.sh`, `push-epp.sh`, `rl_orchestrate.sh`, and
+  `run_on_head.sh` read it from the environment and **fail fast** if it is unset.
+- **Images** - every runtime image (verl, crane, EPP, Envoy) is defined in `deploy.env`.
   Edit tags there rather than in the manifest; `deploy.sh` substitutes them (and `NAMESPACE`)
   into `ray-cluster.yaml.tmpl` at apply time.
 
@@ -57,7 +56,7 @@ in the main README.
 `deploy.sh apply` does everything: it builds the `llmd-epp-configs` ConfigMap from the
 standalone config files (`epp-config.yaml`, `epp-config-pd.yaml`, and `envoy.yaml` are the
 source of truth - **do not** apply `configmap.yaml` directly, it has no `data:` block) and
-applies the rendered cluster manifest, both into the namespace from `deploy.env`:
+applies the rendered cluster manifest, both into `$NAMESPACE`:
 
 ```bash
 bash deploy/deploy.sh apply
@@ -76,10 +75,49 @@ The `postStart` hook on each pod installs the integration package with pip insta
 
 ## Step 3 - Run training
 
-Exec into the head pod, then run one of the commands below.
+### Quick start (native / EPP)
+
+Running a job normally means logging into the head pod and launching training from
+there (the [Manual](#manual-all-modes) path below). Two scripts automate that so a
+run is a single command from your laptop:
+
+- `scripts/run_on_head.sh` - laptop-side launcher: resolves the head pod by its Ray label, copies `run_test.sh` onto it, and runs it there (namespace from `$NAMESPACE`).
+- `scripts/run_test.sh` - runs on the pod: wraps verl's `run_qwen3_4b_fsdp.sh` with the right Hydra overrides for the chosen `--mode`.
+
+Where modes (`--mode`):
+
+- `native` - baseline: verl's built-in replica routing, no EPP.
+- `epp` - route rollouts through the llm-d EPP (Integration 1).
+- `llm-d` - Envoy + EPP HTTP stack (Integration 2); not yet implemented in `run_test.sh`.
+
+Other options (`--steps`, `--tp`, `--n`, `--name`, `--reqlog`) and their defaults
+are documented in the header comment of [scripts/run_test.sh](../scripts/run_test.sh).
+`scripts/run_on_head.sh --help` covers the launcher's own flags.
+
+Examples:
+```bash
+scripts/run_on_head.sh --mode epp                    # background on the pod, using the EPP as a router, tails the log
+scripts/run_on_head.sh --fg --mode native            # run attached (foreground), with the original Verl router
+scripts/run_on_head.sh --mode epp --steps 20 --tp 2
+```
+
+By default `run_on_head.sh` executes on the pod in the background (survives a laptop
+disconnect; Ctrl-C just detaches the tail) and streams `/tmp/train.log`; `--fg`
+runs it attached. All other args pass straight through to `run_test.sh`.
+
+For Envoy or PD-disaggregated modes, 8-GPU sizing, or to tweak the Hydra
+overrides directly, exec in and run the explicit commands below.
+
+### Manual (all modes)
+
+Exec into the head pod, then run one of the commands below. Resolve the head pod
+by its Ray label rather than hardcoding the name (the `verl-cluster-head-xxxxx`
+suffix changes on every recreation):
 
 ```bash
-kubectl exec -it <head-pod-name> -- bash
+export NAMESPACE=<your-namespace>   # if not already set (see Step 1)
+HEAD=$(kubectl get pod -n "$NAMESPACE" -l ray.io/node-type=head -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it -n "$NAMESPACE" "$HEAD" -- bash
 cd /opt/verl/examples/grpo_trainer
 ```
 

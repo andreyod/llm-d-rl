@@ -18,17 +18,15 @@ set -euo pipefail
 ACTION="${1:-apply}"
 cd "$(dirname "$0")"
 
-# deploy.env is the single source of truth for NAMESPACE and the IMG_* refs.
-# A non-empty NAMESPACE from the environment still wins (for one-off overrides).
-_ns_override="${NAMESPACE:-}"
+# deploy.env provides the IMG_* refs (envsubst reads them from the environment).
 set -a
 # shellcheck disable=SC1091
 . ./deploy.env
 set +a
-[ -n "$_ns_override" ] && NAMESPACE="$_ns_override"
 
-# NAMESPACE is mandatory and has no default: :? fires on empty OR unset.
-: "${NAMESPACE:?not set - edit NAMESPACE in deploy/deploy.env}"
+# NAMESPACE is per-user and comes from the environment, not deploy.env. Mandatory,
+# no default: :? fails fast (before any kubectl) on empty OR unset.
+: "${NAMESPACE:?not set - export NAMESPACE=<your-namespace>}"
 
 render() {
   # Explicit var list keeps envsubst from touching the container-runtime

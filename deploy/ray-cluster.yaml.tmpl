@@ -215,7 +215,7 @@ spec:
                 - key: kubernetes.io/hostname
                   operator: NotIn
                   values:
-                  - pokprod-b93r44s3
+                  - excluded-node
         containers:
         - name: ray-worker
           image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration

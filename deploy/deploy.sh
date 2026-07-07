@@ -43,7 +43,6 @@ create_configmap() {
   # namespace. envoy.yaml is consumed by the llm-d stack (Envoy) integration.
   kubectl create configmap llmd-epp-configs \
     --from-file=epp-config.yaml=epp-config.yaml \
-    --from-file=epp-config-pd.yaml=epp-config-pd.yaml \
     --from-file=envoy.yaml=envoy.yaml \
     --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -

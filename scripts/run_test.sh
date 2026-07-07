@@ -13,7 +13,7 @@
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
 #   --name   override experiment name      (default: auto-generated)
-#   --reqlog enable per-request JSONL log  (default: on for epp/llm-d, off for native)
+#   --reqlog enable per-request JSONL log  (default: on for all modes)
 
 set -euo pipefail
 
@@ -49,7 +49,13 @@ EXTRA_HYDRA=""
 case "$MODE" in
   native)
     DEFAULT_NAME="qwen3_4b_grpo_baseline_tp${TP}_n${N}_${STEPS}s"
-    [[ -z "$REQLOG" ]] && REQLOG="off"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    # Native verl routing (GlobalRequestLoadBalancer), but with a logging client so
+    # the run produces the same per-request reqlog as EPP, plus the endpoints YAML
+    # for the vLLM /metrics scraper. Routing behaviour is unchanged from stock native.
+    EXTRA_HYDRA="
+  +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.native_logging.agent_loop_manager.NativeLoggingAgentLoopManager \
+  +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml"
     ;;
 
   epp)

@@ -136,7 +136,13 @@ esac
 TRAIN_RESOLVED=${TRAIN_FILE:-$DEF_TRAIN}
 TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}
 if [[ "$TASK" == "geo3k" ]]; then
+  # actor.strategy=fsdp (FSDP1): the VL launch script forces fsdp2 + use_fused_kernels=True, which
+  # trips "aten.mm.default got mixed torch.Tensor and DTensor" in compute_log_prob (verl #5633 - the
+  # fused-logits matmul mixes a plain tensor with an fsdp2-sharded DTensor). FSDP1 shards params as
+  # flat plain tensors (no DTensor), so the mixed-type matmul cannot occur; this unblocks geo3k
+  # training while keeping fused kernels on (disabling them instead risks OOM per the same issue).
   TASK_OVERRIDES=(data.train_files="$TRAIN_RESOLVED" data.val_files="$TEST_RESOLVED" data.image_key=images
+    actor_rollout_ref.actor.strategy=fsdp
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=16384
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384)

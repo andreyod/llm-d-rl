@@ -1,6 +1,9 @@
-# Approximate prefix-cache EPP config for verl.
-# Derived from guides/optimized-baseline/router/optimized-baseline.values.yaml, extended with
-# file-discovery (verl file-based endpoint discovery) and vllmhttp-parser token_ids.
+# Burst prefix-cache EPP config for verl (prefix-dominant profile).
+# Pipeline: token-producer -> burst-prefix-cache-producer -> prefix-cache-scorer.
+# Profile is prefix-cache-scorer (2) + load-aware-scorer (1) with max-score-picker, so the
+# burst producer's within-window group co-location wins over load-balancing 2:1. This mirrors
+# the inference-scheduler burst sample. Extended with file-discovery (verl file-based endpoint
+# discovery) and vllmhttp-parser token_ids.
 
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
@@ -11,12 +14,6 @@ plugins:
     parameters:
       path: /tmp/epp-endpoints.yaml
       watchFile: true
-
-  - name: queue-scorer
-    type: queue-scorer
-
-  - name: kv-cache-utilization-scorer
-    type: kv-cache-utilization-scorer
 
   - name: prefix-cache-scorer
     type: prefix-cache-scorer
@@ -40,9 +37,14 @@ plugins:
       # prefix at block granularity rather than whole-prompt identity.
       blockSizeTokens: 64   # prefix block size used for match length
       minColocateBlocks: 1  # min matching blocks required to co-locate a request
+      maxBatchSize: 10000
+      
 
-  - name: no-hit-lru-scorer
-    type: no-hit-lru-scorer
+  - name: load-aware-scorer
+    type: load-aware-scorer
+
+  - name: max-score-picker
+    type: max-score-picker
 
   - name: metrics-source
     type: metrics-data-source
@@ -60,14 +62,11 @@ requestHandler:
 schedulingProfiles:
   - name: default
     plugins:
-      - pluginRef: queue-scorer
-        weight: 2
-      - pluginRef: kv-cache-utilization-scorer
-        weight: 2
       - pluginRef: prefix-cache-scorer
-        weight: 3
-      - pluginRef: no-hit-lru-scorer
         weight: 2
+      - pluginRef: load-aware-scorer
+        weight: 1
+      - pluginRef: max-score-picker
 
 dataLayer:
   discovery:

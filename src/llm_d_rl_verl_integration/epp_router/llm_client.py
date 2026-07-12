@@ -71,6 +71,9 @@ class EPPLLMClient(LLMServerClient):
         from llm_d_rl_verl_integration.epp_router.grpc_client import EPPGrpcClient
         self._epp_client = EPPGrpcClient(self._grpc_addr)
         self._reqlog_f = self._open_reqlog()
+        # Per-trajectory turn counter keyed by the (stable) incoming request_id;
+        # see NativeLogging twin. 0-based turn index per trajectory (0 for single-turn).
+        self._turn_counts: dict[str, int] = {}
 
     @staticmethod
     def _open_reqlog():
@@ -135,9 +138,13 @@ class EPPLLMClient(LLMServerClient):
             ntok = len(out.token_ids) if getattr(out, "token_ids", None) is not None else None
         except Exception:
             ntok = None
+        rid = str(request_id)
+        turn = self._turn_counts.get(rid, 0)
+        self._turn_counts[rid] = turn + 1
         self._log_request({
             "ts": time.time(),
-            "request_id": str(request_id),
+            "request_id": rid,
+            "turn": turn,
             "endpoint": endpoint,
             "prompt_hash": _phash(prompt_ids),
             "prompt_tokens": len(prompt_ids),

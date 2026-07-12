@@ -45,6 +45,12 @@ class LoggingLLMClient(LLMServerClient):
         # process after unpickling, same as EPPLLMClient.
         self.__dict__.update(state)
         self._reqlog_f = self._open_reqlog()
+        # Per-trajectory turn counter, keyed by the (stable) incoming request_id.
+        # ToolAgentLoop reuses one request_id across all turns of a trajectory, so
+        # this yields a 0-based turn index for multi-turn agentic rollouts (always 0
+        # for single-turn tasks). Not GC'd: bounded by trajectory count per run, and
+        # the client is recreated each run.
+        self._turn_counts: dict[str, int] = {}
 
     @staticmethod
     def _open_reqlog():
@@ -116,9 +122,13 @@ class LoggingLLMClient(LLMServerClient):
                 ntok = len(output.token_ids) if getattr(output, "token_ids", None) is not None else None
             except Exception:
                 ntok = None
+            rid = str(request_id)
+            turn = self._turn_counts.get(rid, 0)
+            self._turn_counts[rid] = turn + 1
             self._log_request({
                 "ts": time.time(),
-                "request_id": str(request_id),
+                "request_id": rid,
+                "turn": turn,
                 "endpoint": server_id,
                 "prompt_hash": _phash(prompt_ids),
                 "prompt_tokens": len(prompt_ids),

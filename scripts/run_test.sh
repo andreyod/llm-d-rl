@@ -12,7 +12,7 @@
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
-#   --task   gsm8k | hotpotqa | musique | quality | geo3k   (default: gsm8k)
+#   --task   gsm8k | hotpotqa | musique | quality | searchr1 | geo3k   (default: gsm8k)
 #   --name   override experiment name      (default: auto-generated)
 #   --reqlog enable per-request JSONL log  (default: on for all modes)
 
@@ -178,6 +178,46 @@ case "$TASK" in
       actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=12288
     )
     ;;
+  searchr1)
+    # Text Qwen3-4B on MULTI-TURN AGENTIC Search-R1: the model interleaves <think> reasoning with
+    # `search` tool calls (served by the in-cluster BM25 retriever over wiki-18) and emits a final
+    # <answer>; reward = EM via data_source=searchR1_hotpotqa baked into the parquet. This is the
+    # genuinely prefill-heavy regime EPP targets - each turn re-appends the growing conversation +
+    # retrieved passages, so keeping a trajectory's turns on one replica reuses that KV instead of
+    # re-prefilling it. First task to use verl's multi-turn tool loop.
+    #
+    # Activation: default_agent_loop=tool_agent selects verl's ToolAgentLoop per sample; our
+    # native/epp agent_loop_manager_class still supplies the logging/routing client via
+    # server_manager.generate (orthogonal - the loop is host-side, generation stays on vLLM).
+    # format=hermes is the Qwen3 tool-call format; the chat template injects the tool schema via
+    # tools=, so make_searchr1.py's prompt only specifies <think>/<answer>, not a raw tool-call syntax.
+    # tool_config_path = searchr1_tool_config.yaml, mounted from the llmd-epp-configs ConfigMap.
+    #
+    # Length: the initial prompt is just the question (small -> DEF_MAXP=2048); DEF_MAXR must cover
+    # ALL turns' generations PLUS the appended tool observations (response_mask=0), hence large (4096).
+    # max_tool_response_length caps each turn's passages. Token-len budgets >= max_prompt+response.
+    # These are first-guess values - tune after the smoke run reveals the real turn/length spread.
+    FSDP_SCRIPT=run_qwen3_4b_fsdp.sh
+    DEF_MODEL=/tmp/verl/models/Qwen3-4B
+    DEF_PROJECT=verl_grpo_searchr1
+    DEF_TRAIN=/tmp/verl/data/searchr1/train.parquet
+    DEF_TEST=/tmp/verl/data/searchr1/test.parquet
+    DEF_MAXP=2048; DEF_MAXR=4096
+    TASK_OVERRIDES=(
+      actor_rollout_ref.rollout.agent.default_agent_loop=tool_agent
+      actor_rollout_ref.rollout.multi_turn.enable=True
+      actor_rollout_ref.rollout.multi_turn.format=hermes
+      actor_rollout_ref.rollout.multi_turn.tool_config_path=/etc/llmd-configs/searchr1_tool_config.yaml
+      actor_rollout_ref.rollout.multi_turn.max_assistant_turns=4
+      actor_rollout_ref.rollout.multi_turn.max_user_turns=4
+      actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1
+      actor_rollout_ref.rollout.multi_turn.max_tool_response_length=512
+      data.return_raw_chat=True
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=12288
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=12288
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=12288
+    )
+    ;;
   geo3k)
     # Multimodal Qwen2.5-VL-7B on geo3k. KV-reuse profile: short decode + room for big images.
     # The VL launch script HARDCODES data.train_files/val_files (unlike the 4B script which reads
@@ -189,7 +229,7 @@ case "$TASK" in
     DEF_TEST=/tmp/verl/data/geo3k/test.parquet
     DEF_MAXP=8192; DEF_MAXR=256
     ;;
-  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|musique|geo3k)"; exit 1 ;;
+  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|musique|quality|searchr1|geo3k)"; exit 1 ;;
 esac
 TRAIN_RESOLVED=${TRAIN_FILE:-$DEF_TRAIN}
 TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}

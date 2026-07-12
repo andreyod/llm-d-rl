@@ -36,6 +36,9 @@ htmlcov/
 .idea/
 *.swp
 
+# Claude Code local agent dir
+.claude/
+
 # macOS
 .DS_Store
 

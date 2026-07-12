@@ -31,13 +31,17 @@ plugins:
       # windowDurationMs must be wide enough to capture a whole rollout step's
       # same-prompt samples (verl dispatches them in one burst); too small ->
       # partial grouping. It adds up to windowDurationMs latency per request.
-      # 1500ms: measured a QuALITY step's ~2048 requests (huge ~6.7k-tok prompts) arrive over
-      # ~0.3-1.0s -> a 100ms window split each step into ~5 windows and co-location was only 35%.
-      # 1500ms fits the whole arrival burst in ONE window -> ~full group+document co-location, and
-      # since training rollout is a tight non-pipelined burst it costs only ~+1s/step (~+2% of gen,
-      # ~+0.2% of the training-dominated step). (Validation is pipelined so it eats more of the
-      # window wait, but it is a small fraction of the step.)
-      windowDurationMs: 1500
+      # 100ms is the default: on GSM8K/HotpotQA a rollout step's burst arrives within
+      # one 100ms window and within-step co-location was already ~82-99%. A QuALITY
+      # experiment raised this to 1500ms to fit the huge ~6.7k-tok article prompts'
+      # wider arrival spread into ONE window (100ms had split each step into ~5 windows,
+      # co-loc ~35% -> "size-8"/within-step ~82%; 1500ms lifted within-step to ~100%).
+      # That gain was OVERKILL: the QuALITY EPP win came from shuffle-on (native
+      # prefix-hit 91%->42%), not the window, and 1500ms cost pick_s ~250ms->1668ms
+      # (~+1.4s/step) for a co-loc gain EPP did not need (its own hit was 93-97% either
+      # way). Reverted to 100ms; widen again only if a workload's per-step arrival burst
+      # is measurably too spread for one 100ms window.
+      windowDurationMs: 100
       maxPerReplica: -1     # -1 = whole group to one replica (max co-location)
       # Longest-prefix-match grouping (burst-longest build): group by shared
       # prefix at block granularity rather than whole-prompt identity.

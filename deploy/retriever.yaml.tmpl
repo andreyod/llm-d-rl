@@ -34,6 +34,14 @@ spec:
       labels:
         app: searchr1-retriever
     spec:
+      # ghcr.io/ezrasilvera/searchr1-retriever is pushed private, so unlike the public
+      # IMG_VERL the retriever needs a pull secret. Create it once with:
+      #   kubectl create secret generic ghcr-pull -n $NAMESPACE \
+      #     --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+      #     --type=kubernetes.io/dockerconfigjson
+      # (or make the ghcr package public and drop this).
+      imagePullSecrets:
+        - name: ghcr-pull
       initContainers:
         - name: fetch-index
           image: ${IMG_RETRIEVER}
@@ -42,10 +50,11 @@ spec:
             - -c
             - |
               set -eu
+              # huggingface_hub 1.x deprecated `huggingface-cli`; use snapshot_download (version-robust).
               echo "downloading BM25 Lucene index..."
-              huggingface-cli download PeterJinGo/wiki-18-bm25-index --repo-type dataset --local-dir /data/bm25
+              python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='PeterJinGo/wiki-18-bm25-index', repo_type='dataset', local_dir='/data/bm25')"
               echo "downloading wiki-18 corpus (fallback if the index has no stored raw docs)..."
-              huggingface-cli download PeterJinGo/wiki-18-corpus --repo-type dataset --local-dir /data/corpus
+              python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='PeterJinGo/wiki-18-corpus', repo_type='dataset', local_dir='/data/corpus')"
               if [ -f /data/corpus/wiki-18.jsonl.gz ]; then
                 echo "gunzip corpus..."; gunzip -f /data/corpus/wiki-18.jsonl.gz
               fi
@@ -60,9 +69,16 @@ spec:
             - python
             - /app/retrieval_server.py
             - --retriever_name=bm25
-            - --index_path=/data/bm25
+            # The HF dataset nests the Lucene index one level down (/data/bm25/bm25).
+            - --index_path=/data/bm25/bm25
             - --corpus_path=/data/corpus/wiki-18.jsonl
             - --topk=3
+          env:
+            # pyserini's encode module eagerly constructs an openai.OpenAI() client at import
+            # (pyserini.encode._openai), which raises without a key. BM25 never calls OpenAI, so
+            # a dummy key just satisfies the constructor.
+            - name: OPENAI_API_KEY
+              value: "sk-noop"
           ports:
             - containerPort: 8000
               name: http

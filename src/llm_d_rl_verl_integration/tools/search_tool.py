@@ -122,7 +122,10 @@ class SearchTool(BaseTool):
         if not queries:
             return ToolResponse(text="No search query provided."), 0.0, {"num_queries": 0}
 
-        payload = {"queries": queries, "topk": self._topk, "return_scores": False}
+        # return_scores=True: the Search-R1 server's /retrieve unpacks (results, scores)
+        # unconditionally, so return_scores=False raises server-side ("not enough values to
+        # unpack"). We ignore the scores; _doc_to_text unwraps the {"document","score"} form.
+        payload = {"queries": queries, "topk": self._topk, "return_scores": True}
         try:
             session = await self._get_session()
             async with session.post(self._url, json=payload) as resp:

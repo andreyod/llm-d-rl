@@ -12,7 +12,7 @@
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
-#   --task   gsm8k | hotpotqa | geo3k      (default: gsm8k)
+#   --task   gsm8k | hotpotqa | musique | quality | geo3k   (default: gsm8k)
 #   --name   override experiment name      (default: auto-generated)
 #   --reqlog enable per-request JSONL log  (default: on for all modes)
 
@@ -120,6 +120,64 @@ case "$TASK" in
       actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=8192
     )
     ;;
+  musique)
+    # Text Qwen3-4B on single-turn context-in-prompt MuSiQue (real multi-hop long-prompt /
+    # short-answer reading comprehension; reward = EM via data_source=searchR1_musique baked into
+    # the parquet). Same launch path as hotpotqa, but MuSiQue ships ~20 candidate paragraphs per
+    # example (vs HotpotQA's 10), so prompts are ~2x longer (measured p50=2459 p90=3208 max=7271
+    # tok on Qwen3-4B) with the same short decode -> a higher prefill:decode ratio, the regime
+    # where EPP burst prefix-cache co-location wins hardest.
+    FSDP_SCRIPT=run_qwen3_4b_fsdp.sh
+    DEF_MODEL=/tmp/verl/models/Qwen3-4B
+    DEF_PROJECT=verl_grpo_musique
+    DEF_TRAIN=/tmp/verl/data/musique/train.parquet
+    DEF_TEST=/tmp/verl/data/musique/test.parquet
+    # max_prompt=5120 keeps 99.93% of examples (filter_overlong_prompts drops the rest); the p99 is
+    # 4047 so almost nothing is lost. Response cap 1024 (NOT 256): measured on the honest HotpotQA
+    # 1024 run the model's natural reasoning is p50~252 p90~567 mean~320, and a 256 cap clips p90+
+    # (output pinned at 256) which artificially inflates the prefill:decode ratio and the EPP win.
+    # We keep decode uncapped-in-practice and let MuSiQue's LARGE prompt (p50=2459, ~1.6x HotpotQA)
+    # carry the prefill dominance honestly: ~2459/~320 = ~7-8:1, vs HotpotQA-1024's ~4.6:1, so a
+    # bigger EPP win from bigger input alone - no decode clipping. Directly comparable to the
+    # hotpotqa_*_1024 pair (same 1024 cap). Budgets >= max_prompt+response (5120+1024=6144).
+    DEF_MAXP=5120; DEF_MAXR=1024
+    TASK_OVERRIDES=(
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=8192
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=8192
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=8192
+    )
+    ;;
+  quality)
+    # Text Qwen3-4B on QuALITY long-context multiple-choice reading comprehension (real, convergent).
+    # This is the "large input compensates for CoT" workload: article-first prompts are ~6.8k tok
+    # (p50; p99 7648, max 7668), the answer is one option letter, and REASONING STAYS ON (<think>) -
+    # even a few-hundred-token CoT leaves prefill:decode well above ~5:1 purely from the huge article.
+    # Reward = EM via data_source=searchR1_nq alias baked into the parquet (letter match).
+    #
+    # DOCUMENT CO-LOCATION: the article is the long LEADING prefix, rows are sorted by article, and we
+    # set data.shuffle=False so all ~17 questions of an article land in the same rollout step; the EPP
+    # burst longest-prefix placement then co-locates the whole document on one replica (article KV
+    # prefilled once, reused across its questions). NOTE: shuffle=False + article order means correlated
+    # batches - a deliberate RL-dynamics tradeoff for the cross-question KV-reuse study.
+    FSDP_SCRIPT=run_qwen3_4b_fsdp.sh
+    DEF_MODEL=/tmp/verl/models/Qwen3-4B
+    DEF_PROJECT=verl_grpo_quality
+    DEF_TRAIN=/tmp/verl/data/quality/train.parquet
+    DEF_TEST=/tmp/verl/data/quality/test.parquet
+    # max_prompt=8192 keeps 100% (max 7668 + chat template < 8192). Response cap 2048 is a generous
+    # NON-clipping ceiling so we measure the model's natural CoT (not clip it). Budgets >= 8192+2048.
+    DEF_MAXP=8192; DEF_MAXR=2048
+    # data.shuffle is env-controlled (QUALITY_SHUFFLE, default False): False = document co-location
+    # (article-ordered, questions cluster in one step); True = the controlled counter-run that removes
+    # article clustering so native cannot ambiently warm the article cache (isolates the pigeonhole
+    # effect vs the shuffle=False run - keep everything else identical).
+    TASK_OVERRIDES=(
+      data.shuffle=${QUALITY_SHUFFLE:-False}
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=12288
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=12288
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=12288
+    )
+    ;;
   geo3k)
     # Multimodal Qwen2.5-VL-7B on geo3k. KV-reuse profile: short decode + room for big images.
     # The VL launch script HARDCODES data.train_files/val_files (unlike the 4B script which reads
@@ -131,7 +189,7 @@ case "$TASK" in
     DEF_TEST=/tmp/verl/data/geo3k/test.parquet
     DEF_MAXP=8192; DEF_MAXR=256
     ;;
-  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|geo3k)"; exit 1 ;;
+  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|musique|geo3k)"; exit 1 ;;
 esac
 TRAIN_RESOLVED=${TRAIN_FILE:-$DEF_TRAIN}
 TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}
@@ -141,11 +199,37 @@ if [[ "$TASK" == "geo3k" ]]; then
   # fused-logits matmul mixes a plain tensor with an fsdp2-sharded DTensor). FSDP1 shards params as
   # flat plain tensors (no DTensor), so the mixed-type matmul cannot occur; this unblocks geo3k
   # training while keeping fused kernels on (disabling them instead risks OOM per the same issue).
+  #
+  # Image size for the KV-reuse study: geo3k source diagrams are tiny (~64 image tokens), a weak
+  # KV-reuse workload. Qwen2.5-VL image tokens = pixels / (28*28); verl stores images raw and only
+  # the processor resizes, bounded by min_pixels/max_pixels (data.mm_processor_kwargs, forwarded to
+  # both training and vLLM rollout so they tokenize identically). smart_resize UPSCALES an image up
+  # to min_pixels, so pinning min=max forces every image to ~GEO3K_IMG_TOKENS tokens regardless of
+  # native size -> a large shared image+question prefix per GRPO group = a strong prefill-heavy
+  # KV-reuse workload. This is synthetic inflation (upsampled diagrams add no visual info), a systems
+  # benchmark, not a quality result. GEO3K_IMG_TOKENS default 4096; sweep it to chart the crossover.
+  GEO3K_IMG_TOKENS=${GEO3K_IMG_TOKENS:-4096}
+  GEO3K_IMG_PIXELS=$(( GEO3K_IMG_TOKENS * 784 ))   # 784 = 28*28 pixels per visual token
+  # Host-RAM shaping for large images: the head pod (driver, collates all gen results) is cgroup
+  # capped at 96 GB. Large-image pixel_values tensors blow past that during validation (the whole
+  # test set is generated as one batch - val_batch_size is deprecated/ignored in this verl) unless
+  # we shrink the footprint:
+  #  - cap the geo3k TEST set to ~256 examples when building the data (see make/preprocess) so
+  #    validation collates far fewer image tensors on the driver.
+  #  - filter_overlong_prompts=False: True processes every image through the processor at dataset
+  #    init to measure length; at large token counts that is a big upfront cost. Pinned images + a
+  #    generous max_prompt are never overlong, so filtering is unnecessary here.
+  #  - train_batch_size 256 -> 128: halve the images the driver holds per training step.
+  GEO3K_TRAIN_BATCH=${GEO3K_TRAIN_BATCH:-64}
   TASK_OVERRIDES=(data.train_files="$TRAIN_RESOLVED" data.val_files="$TEST_RESOLVED" data.image_key=images
     actor_rollout_ref.actor.strategy=fsdp
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=16384
-    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384)
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384
+    +data.mm_processor_kwargs.min_pixels=$GEO3K_IMG_PIXELS
+    +data.mm_processor_kwargs.max_pixels=$GEO3K_IMG_PIXELS
+    data.filter_overlong_prompts=False
+    data.train_batch_size=$GEO3K_TRAIN_BATCH)
 fi
 
 # ── launch ────────────────────────────────────────────────────────────────────

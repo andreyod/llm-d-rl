@@ -155,12 +155,18 @@ spec:
           resources:
             limits:
               cpu: "32"
-              memory: "96G"
+              # 512G (was 96G): the head runs the driver (fit() loop), which is also the
+              # dataloader and the point where every generated sequence is collected into one
+              # DataProto. For MULTIMODAL tasks (geo3k) with large images the per-sample
+              # pixel_values are large (~19MB at 2048 image tokens, ~38MB at 4096) and validation
+              # generates the whole test set as one batch on the driver, so 96G OOM'd the head.
+              # The node has ~2TB, so give the head generous headroom. Text tasks are unaffected.
+              memory: "512G"
               # No GPU on head — it only runs the driver (fit() loop) and Ray GCS.
               # FSDP training and NCCL broadcast happen on worker pods.
             requests:
               cpu: "24"
-              memory: "64G"
+              memory: "256G"
           ports:
           - containerPort: 6379
             name: gcs-server

@@ -320,6 +320,11 @@ if [[ "$TASK" == "geo3k" ]]; then
     data.train_batch_size=$GEO3K_TRAIN_BATCH)
 fi
 
+# Optional extra hydra overrides, appended LAST so they win over the per-task defaults
+# (e.g. raise ppo/log_prob token budgets for a bigger max_prompt). Space-separated;
+# values must not contain spaces. Empty by default.
+read -r -a EXTRA_OV <<< "${EXTRA_OVERRIDES:-}"
+
 # ── launch ────────────────────────────────────────────────────────────────────
 cd /opt/verl/examples/grpo_trainer
 
@@ -340,4 +345,5 @@ bash "$FSDP_SCRIPT" \
   actor_rollout_ref.rollout.n=$N \
   ${TASK_OVERRIDES[@]+"${TASK_OVERRIDES[@]}"} \
   +actor_rollout_ref.rollout.engine_kwargs.vllm.enable_prompt_tokens_details=true \
+  ${EXTRA_OV[@]+"${EXTRA_OV[@]}"} \
   hydra.run.dir=/tmp/hydra-outputs${EXTRA_HYDRA}

@@ -12,7 +12,7 @@
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
-#   --task   gsm8k | hotpotqa | musique | quality | searchr1 | geo3k   (default: gsm8k)
+#   --task   gsm8k | hotpotqa | musique | quality | searchr1 | scotus | geo3k   (default: gsm8k)
 #   --name   override experiment name      (default: auto-generated)
 #   --reqlog enable per-request JSONL log  (default: on for all modes)
 
@@ -218,6 +218,54 @@ case "$TASK" in
       actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=12288
     )
     ;;
+  scotus)
+    # Text Qwen3-4B on SCOTUS issue-area classification (lex_glue/scotus): the "VERY LARGE input,
+    # VERY SHORT output" EPP workload. Full Supreme Court opinion (p50 ~5k tok, tail >10k) -> one of
+    # 13 issue-area labels. Single-turn; reward = EM via data_source=searchR1_nq (code or name match,
+    # baked into the parquet). Within a GRPO group all n samples share the IDENTICAL long opinion ->
+    # a very large shared prefix; EPP burst group co-location prefills it ONCE vs native's n times
+    # (n request_ids -> n sticky sessions -> native scatters + re-prefills). Bigger shared prefill
+    # than QuALITY's ~6.7k -> the biggest EPP group-co-location win in the study. Unique opinions +
+    # default shuffle -> native cannot ambient-cache across groups.
+    FSDP_SCRIPT=run_qwen3_4b_fsdp.sh
+    DEF_MODEL=/tmp/verl/models/Qwen3-4B
+    DEF_PROJECT=verl_grpo_scotus
+    DEF_TRAIN=/tmp/verl/data/scotus/train.parquet
+    DEF_TEST=/tmp/verl/data/scotus/test.parquet
+    # max_prompt 16384 fits the bulk of opinions; filter_overlong drops the long tail (rather than
+    # crash), truncation=right is a safety net. Response 1024 = brief CoT + short label; input still
+    # dominates (~5-14k : 1k). Token-len budgets >= max_prompt+response (16384+1024=17408 -> 18432).
+    DEF_MAXP=16384; DEF_MAXR=1024
+    TASK_OVERRIDES=(
+      data.filter_overlong_prompts=True
+      data.truncation=right
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=18432
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=18432
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=18432
+    )
+    ;;
+  scotus_xl)
+    # scotus variant for the token-balanced-EPP win test: bigger real input + naturally short
+    # output. DIRECT single-label classification via Qwen3 /no_think (no CoT) - the standard
+    # LexGLUE formulation, legitimate for classification (CoT does not help it; validated by
+    # accuracy-parity with the CoT scotus). Output is naturally short (a label), NOT clipped:
+    # DEF_MAXR=256 is a generous non-binding ceiling. max_prompt raised 16384->24576 to process
+    # more of the real opinion (p90=18k) instead of truncating. Parquet built with
+    # make_scotus.py --no_cot -> /tmp/verl/data/scotus_xl. Budgets >= 24576+256.
+    FSDP_SCRIPT=run_qwen3_4b_fsdp.sh
+    DEF_MODEL=/tmp/verl/models/Qwen3-4B
+    DEF_PROJECT=verl_grpo_scotus_xl
+    DEF_TRAIN=/tmp/verl/data/scotus_xl/train.parquet
+    DEF_TEST=/tmp/verl/data/scotus_xl/test.parquet
+    DEF_MAXP=24576; DEF_MAXR=256
+    TASK_OVERRIDES=(
+      data.filter_overlong_prompts=True
+      data.truncation=right
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=28672
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=28672
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=28672
+    )
+    ;;
   geo3k)
     # Multimodal Qwen2.5-VL-7B on geo3k. KV-reuse profile: short decode + room for big images.
     # The VL launch script HARDCODES data.train_files/val_files (unlike the 4B script which reads
@@ -229,7 +277,7 @@ case "$TASK" in
     DEF_TEST=/tmp/verl/data/geo3k/test.parquet
     DEF_MAXP=8192; DEF_MAXR=256
     ;;
-  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|musique|quality|searchr1|geo3k)"; exit 1 ;;
+  *) echo "ERROR: unknown --task '$TASK' (expected gsm8k|hotpotqa|musique|quality|searchr1|scotus|geo3k)"; exit 1 ;;
 esac
 TRAIN_RESOLVED=${TRAIN_FILE:-$DEF_TRAIN}
 TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}

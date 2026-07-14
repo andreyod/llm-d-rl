@@ -182,8 +182,8 @@ Use `deploy/epp-config-pd.yaml` as the EPP config file for PD runs.
 | Key | Required | Description |
 |-----|----------|-------------|
 | `rollout.name` | yes | `vllm-llmd-pd` |
-| `rollout.disaggregation.prefill_replicas` | yes | Number of prefill replicas |
-| `rollout.disaggregation.decode_replicas` | yes | Number of decode replicas |
+| `rollout.disaggregation.prefill_replicas` | yes | Number of prefill replicas; must satisfy `prefill_replicas + decode_replicas == world_size / tp_size` |
+| `rollout.disaggregation.decode_replicas` | yes | Number of decode replicas; must satisfy `prefill_replicas + decode_replicas == world_size / tp_size` |
 | `rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector` | yes | `NixlConnector` |
 | `rollout.engine_kwargs.vllm.kv_transfer_config.kv_role` | yes | `kv_both` |
 | `rollout.custom.sidecar_connector` | no | KV connector type for `llm-d-routing-sidecar` (default: `nixlv2`) |

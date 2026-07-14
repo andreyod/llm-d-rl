@@ -68,7 +68,7 @@ class EPPLLMClient(LLMServerClient):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        from llm_d_rl_verl_integration.epp_router.grpc_client import EPPGrpcClient
+        from llm_d_rl_verl_integration.llmd_epp.grpc_client import EPPGrpcClient
         self._epp_client = EPPGrpcClient(self._grpc_addr)
         self._reqlog_f = self._open_reqlog()
         # Per-trajectory turn counter keyed by the (stable) incoming request_id;

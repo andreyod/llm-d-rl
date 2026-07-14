@@ -54,7 +54,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-head
-          image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration
+          image: ${IMG_VERL} # stock verl env image (for PD, build from deploy/Dockerfile.pd)
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -261,7 +261,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-worker
-          image: ${IMG_VERL} # Built from deploy/Dockerfile.verl-vllm018-llm-d-integration
+          image: ${IMG_VERL} # stock verl env image (for PD, build from deploy/Dockerfile.pd)
           imagePullPolicy: Always
           lifecycle:
             postStart:

@@ -1,6 +1,6 @@
 """LLMServerClient that keeps verl's native routing but logs each request.
 
-This is the native-mode twin of epp_router.EPPLLMClient: it does NOT change
+This is the native-mode twin of llmd_epp.EPPLLMClient: it does NOT change
 routing at all - it uses verl's stock GlobalRequestLoadBalancer (least in-flight)
 via ``_acquire_server``/``_release_server`` exactly as the base LLMServerClient
 does. The only addition is a per-request JSONL record (endpoint, timings, token

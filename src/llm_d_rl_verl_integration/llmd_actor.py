@@ -48,8 +48,8 @@ async def _wait_port(host: str, port: int, timeout: float = 120.0) -> None:
 class LlmdActor:
     """Ray actor pinned to the head node that starts EPP and optionally Envoy.
 
-    epp_router integration:  start(..., with_envoy=False) → returns EPP gRPC address
-    llmd_stack integration:  start(..., with_envoy=True)  → returns Envoy address
+    llmd_epp integration:  start(..., with_envoy=False) → returns EPP gRPC address
+    llmd_serving integration:  start(..., with_envoy=True)  → returns Envoy address
     """
 
     def __init__(self) -> None:

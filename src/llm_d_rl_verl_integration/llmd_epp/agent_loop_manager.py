@@ -7,7 +7,7 @@ To use, set in the training YAML config:
       rollout:
         name: vllm
         agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
+          agent_loop_manager_class: llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager
         custom:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
@@ -21,7 +21,7 @@ To use, set in the training YAML config:
           prefill_replicas: 2       # do NOT set enabled=True (avoids NotImplementedError from verl)
           decode_replicas: 2
         agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
+          agent_loop_manager_class: llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager
         custom:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
@@ -37,7 +37,7 @@ from omegaconf import OmegaConf
 
 from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopManager
 from llm_d_rl_verl_integration.llmd_actor import LlmdActor
-from llm_d_rl_verl_integration.epp_router.llm_client import EPPLLMClient
+from llm_d_rl_verl_integration.llmd_epp.llm_client import EPPLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import RolloutReplicaRegistry
 from llm_d_rl_verl_integration.pd_replica import PDEngineReplicaFactory

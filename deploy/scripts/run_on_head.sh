@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Launch a training run on the RayCluster head from your laptop.
 #
-# Resolves the head pod by its Ray label (namespace from deploy/deploy.env),
-# copies run_test.sh into it, and runs it there. All arguments except this
-# script's own --fg flag are passed straight through to run_test.sh.
+# Resolves the head pod by its Ray label (namespace from $NAMESPACE), copies
+# run_test.sh AND the selected workloads/<task>/ folder into it, then runs it
+# there. All arguments except this script's own --fg flag are passed straight
+# through to run_test.sh.
 #
 # Usage:
 #   scripts/run_on_head.sh --mode epp                 # background on pod + tail the log
@@ -28,13 +29,18 @@ REMOTE_LOG="/tmp/train.log"
 # Namespace is per-user and comes from the environment. Mandatory, no default.
 NS="${NAMESPACE:?NAMESPACE not set - export NAMESPACE=<your-namespace>}"
 
-# Split out our own --fg flag; everything else is forwarded to run_test.sh.
+# Split out our own --fg flag; everything else is forwarded to run_test.sh. We also
+# peek at --task (still forwarded) so we know which workloads/<task>/ folder to ship.
 FG=0
 PASS=()
+TASK="gsm8k"
+want_task=0
 for arg in "$@"; do
+  if [ "$want_task" -eq 1 ]; then TASK="$arg"; want_task=0; PASS+=("$arg"); continue; fi
   case "$arg" in
     --fg) FG=1 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --task) want_task=1; PASS+=("$arg") ;;
+    -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) PASS+=("$arg") ;;
   esac
 done
@@ -46,6 +52,17 @@ echo "==> head pod: $HEAD (namespace $NS)"
 
 echo "==> copying run_test.sh to $HEAD:/tmp/run_test.sh"
 kubectl cp "$SCRIPT_DIR/run_test.sh" "$NS/$HEAD:/tmp/run_test.sh"
+
+# Ship the selected workload folder so run_test.sh can source workloads/<task>/task.env
+# on the pod (it falls back to /tmp/workloads when run from /tmp/run_test.sh).
+WLDIR="$SCRIPT_DIR/../../workloads/$TASK"
+if [ -d "$WLDIR" ]; then
+  echo "==> copying workload '$TASK' to $HEAD:/tmp/workloads/$TASK"
+  kubectl exec -n "$NS" "$HEAD" -- mkdir -p /tmp/workloads
+  kubectl cp "$WLDIR" "$NS/$HEAD:/tmp/workloads/$TASK"
+else
+  echo "WARNING: no workload folder at $WLDIR - run_test.sh will error on the pod for --task $TASK" >&2
+fi
 
 if [ "$FG" -eq 1 ]; then
   echo "==> running attached (foreground): run_test.sh ${PASS[*]}"

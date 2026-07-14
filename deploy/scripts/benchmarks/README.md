@@ -9,51 +9,53 @@ H=$(kubectl get pod -n $NS -l ray.io/node-type=head   -o jsonpath='{.items[0].me
 W=$(kubectl get pod -n $NS -l ray.io/node-type=worker -o jsonpath='{.items[0].metadata.name}')
 REPO=~/path/to/llm-d-rl-verl-integration
 ```
-Note: the worker pod has two containers — add `-c ray-worker` to `kubectl exec`/`kubectl cp` for it.
+Note: the worker pod has two containers - add `-c ray-worker` to `kubectl exec`/`kubectl cp` for it.
 
 ## 0. Prereqs
 
 - Cluster up, both pods `1/1 Running` (`kubectl get pods -n $NS`).
-- `kubectl`/`oc` auth valid. OpenShift tokens expire — if you see "Unauthorized", `oc login` again.
+- `kubectl`/`oc` auth valid. OpenShift tokens expire - if you see "Unauthorized", `oc login` again.
   For a multi-hour unattended run, mint a token that outlives the run (~80 min + setup).
 - The integration package is installed in the image. Verify:
   ```bash
   kubectl exec -n $NS $H -- python3 -c \
-    "import llm_d_rl_verl_integration.epp_router.llm_client as m; print(m.__file__)"
+    "import llm_d_rl_verl_integration.llmd_epp.llm_client as m; print(m.__file__)"
   ```
 
 ## 1. Per-request JSONL logging (reqlog)
 
-The logging is **built into the package** — no pod patching required.
+The logging is **built into the package** - no pod patching required.
 It is controlled entirely by the `VERL_REQLOG_DIR` environment variable:
 
-- **EPP / llm-d modes** — `run_test.sh` sets `VERL_REQLOG_DIR=/tmp/verl/reqlog` automatically.
-- **Native baseline** — reqlog is off by default; pass `--reqlog on` to enable it explicitly.
+- **EPP / llm-d modes** - `run_test.sh` sets `VERL_REQLOG_DIR=/tmp/verl/reqlog` automatically.
+- **Native baseline** - reqlog is off by default; pass `--reqlog on` to enable it explicitly.
 
 Each worker process writes `reqlog-<pid>.jsonl` under `VERL_REQLOG_DIR`.
 Fields per record: `ts, request_id, endpoint, prompt_hash, prompt_tokens, output_tokens, pick_s, gen_s`.
 
-`prompt_hash` is a BLAKE2b-8 digest of the token IDs — requests sharing the same prompt
+`prompt_hash` is a BLAKE2b-8 digest of the token IDs - requests sharing the same prompt
 (same GRPO group) will have matching hashes across replicas.
 
-## 2. vLLM /metrics scraper — head only
+## 2. vLLM /metrics scraper - head only
 
 Copy the scraper from the repo and start it before launching the run.
 It reads `/tmp/epp-endpoints.yaml` (written by EPP at startup) each loop, scrapes every
-replica ~1.5s → `/tmp/vllm_metrics.csv`. EPP-only (baseline writes no endpoints file).
+replica ~1.5s -> `/tmp/vllm_metrics.csv`. EPP-only (baseline writes no endpoints file).
 Requires pyyaml (present in the image).
 
 ```bash
-kubectl cp $REPO/kuberay/scripts/benchmarks/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
+kubectl cp $REPO/deploy/scripts/benchmarks/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
 ```
 
-**Important caveat:** vLLM refreshes `prefix_cache_{hits,queries}_total` only every ~70–180s,
+**Important caveat:** vLLM refreshes `prefix_cache_{hits,queries}_total` only every ~70-180s,
 so per-step windowed deltas are unusable. Report prefix-cache hit rate as a whole-run aggregate only.
 
-## 3. Launch script — head only
+## 3. Launch script - head only
 
 ```bash
-kubectl cp $REPO/kuberay/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
+kubectl cp $REPO/deploy/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
+# run_test.sh sources workloads/<task>/task.env, so ship the workloads too (falls back to /tmp/workloads)
+kubectl cp $REPO/workloads $NS/$H:/tmp/workloads
 ```
 
 Usage on the pod:
@@ -68,7 +70,7 @@ kubectl exec -n $NS $H -- bash /tmp/run_test.sh --mode epp --steps 20 --tp 2 --n
 
 The EPP config (plugins) is loaded from the file set by `rollout.custom.epp_config_file`.
 In k8s this is mounted from the `llmd-epp-configs` ConfigMap (built from `deploy/epp-config.yaml`
-or `deploy/epp-config-pd.yaml` — see `kuberay/README.md` Step 2).
+or `deploy/epp-config-pd.yaml` - see `deploy/kuberay/README.md` Step 2).
 
 ## 4. Clean + start scraper + launch (head)
 
@@ -90,7 +92,7 @@ Use `rl_orchestrate.sh` (waits for main_ppo to exit, checks step count, collects
 md5-verified cleanup), then:
 ```bash
 cd ~/work/rl-work/verl-results
-python3 make_graphs.py        # static PNG/PDF — add the new run dir to the RUNS map first
+python3 make_graphs.py        # static PNG/PDF - add the new run dir to the RUNS map first
 python3 make_interactive.py   # graphs.html
 ```
 
@@ -105,6 +107,6 @@ Collected per run: `console.log`, `logs/<jsonl>`, `generations/train/`, `reqlog_
 ## Teardown (free GPUs)
 
 ```bash
-bash kuberay/deploy.sh delete
+bash deploy/kuberay/deploy.sh delete
 # or scale down workerGroupSpecs replicas to 0
 ```

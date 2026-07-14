@@ -7,7 +7,7 @@
 #
 # Build (from the repo root — no local source context required):
 #   podman build \
-#     -f deploy/Dockerfile.verl-vllm018-llm-d-integration \
+#     -f deploy/Dockerfile.pd \
 #     --platform linux/amd64 \
 #     --build-arg VERL_COMMIT=<commit-sha> \
 #     -t <your-registry>/verl:vllm018-llm-d-integration \

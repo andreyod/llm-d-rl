@@ -5,7 +5,7 @@ and optionally override ``_on_servers_ready()`` for extra setup work
 (e.g. launching EPP).
 
 No changes to verl core required — wire in via YAML:
-    actor_rollout_ref.rollout.agent.agent_loop_manager_class: epp_router.agent_loop_manager.LlmdRouterAgentLoopManager
+    actor_rollout_ref.rollout.agent.agent_loop_manager_class: llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager
 """
 
 from __future__ import annotations

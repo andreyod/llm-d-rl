@@ -17,7 +17,7 @@ No verl source changes are required. Everything is wired in through Hydra config
 
 The examples in this repo use `verlai/verl:vllm018.dev1`, tested on verl commit `334d9f8b03816382cbd72e898bc8ae04efca6fbe`. Other versions may work but have not been validated.
 
-### 2. Make the Python package available
+### 2. Install the integration Python package
 
 The package must be installed on every node in the Ray cluster — both the head node and all worker nodes.
 
@@ -25,12 +25,6 @@ Install from PyPI or a git ref:
 
 ```bash
 pip install git+https://github.com/llm-d-incubation/llm-d-rl.git
-```
-
-Or from a local checkout:
-
-```bash
-pip install -e .
 ```
 
 Or, without installing, clone the repo and add the source to your Python path:
@@ -42,7 +36,7 @@ export PYTHONPATH=$(pwd)/llm-d-rl/src:$PYTHONPATH
 
 ### 3. Get the EPP, Envoy, and sidecar binaries
 
-The integration launches three external processes at runtime. Their binaries are not bundled with this package — obtain them from the published images or build from source. EPP and Envoy must be placed on the Ray head node; the sidecar must be placed on each worker node running a decode replica. Then point the integration at them via env vars (set before starting Ray, or in `ray.init` runtime env):
+The integration launches three external processes at runtime. None of these binaries are baked into the verl image (a ~28 GB build), so iterating on any of them never triggers a verl rebuild. Obtain them from the published images or build from source. At runtime, `LlmdActor` on the head node launches EPP and Envoy via `VERL_EPP_BINARY` and `VERL_ENVOY_BINARY`; on each worker, decode replicas launch the sidecar via `VERL_SIDECAR_BINARY` (PD mode only). Point the integration at the binaries via env vars (set before starting Ray, or in `ray.init` runtime env):
 
 | Env var | Default | Binary | Node | Required for |
 |---------|---------|--------|------|-------------|
@@ -79,7 +73,7 @@ During each training step, verl drives generation through the following componen
 
 `LLMServerClient` is the object `AgentLoopWorker` calls for every generation request. verl's default implementation uses `GlobalRequestLoadBalancer` to select replicas by least in-flight requests.
 
-This integration replaces two components — wired in via a single Hydra key, no verl patches:
+This integration replaces two components, both wired in via a single Hydra key with no verl patches required:
 
 - **`AgentLoopManager`** — extended to start EPP (and optionally Envoy) as Ray actors pinned to the head node, and to inject a custom `LLMServerClient` into each `AgentLoopWorker`.
 - **`LLMServerClient`** — replaced with `EPPLLMClient` (Integration 1) or `EnvoyLLMClient` (Integration 2), both of which route through EPP's scoring system.
@@ -159,11 +153,11 @@ For PD disaggregated mode see [PD Disaggregation](#pd-disaggregation).
 
 ## PD Disaggregation
 
-PD disaggregation requires patches for vLLM and verl issues in the base image. [`deploy/Dockerfile.verl-vllm018-llm-d-integration`](deploy/Dockerfile.verl-vllm018-llm-d-integration) builds a ready-to-use image on top of `verlai/verl:vllm018.dev1` with those patches applied. This image is only needed for PD — the standard `verlai/verl:vllm018.dev1` image works for Integrations 1 and 2 without PD.
+PD disaggregation requires patches to address vLLM and verl issues in the base image. [`deploy/Dockerfile.verl-vllm018-llm-d-integration`](deploy/Dockerfile.verl-vllm018-llm-d-integration) builds a ready-to-use image on top of `verlai/verl:vllm018.dev1` with those patches applied. This image is only needed for PD — the standard `verlai/verl:vllm018.dev1` image works for Integrations 1 and 2 without PD.
 
 Both integrations support prefill-decode (PD) disaggregation via `rollout.name=vllm-llmd-pd`.
 
-Replicas are split into prefill and decode roles by `PDEngineReplicaFactory`. The first `prefill_replicas` ranks become prefill; the remaining become decode. `world_size / tp_size` must equal `prefill_replicas + decode_replicas`.
+Replicas are split into prefill and decode roles by `PDEngineReplicaFactory`. The first `prefill_replicas` ranks become prefill replicas; the remaining become decode replicas. `world_size / tp_size` must equal `prefill_replicas + decode_replicas`.
 
 - **Prefill replicas** — launch vLLM with NIXL side-channel env vars. They never serve `generate()` calls directly; the decode sidecar pulls KV blocks from them.
 - **Decode replicas** — launch vLLM with NIXL env vars, then spawn `llm-d-routing-sidecar` alongside. The sidecar is the public endpoint: it fetches the KV cache from the prefill replica over NIXL, then decodes locally.

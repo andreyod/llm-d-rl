@@ -21,7 +21,7 @@ The examples in this repo use `verlai/verl:vllm018.dev1`, tested on verl commit 
 
 The package must be installed on every node in the Ray cluster — both the head node and all worker nodes.
 
-Install from PyPI or a git ref:
+Install from a git ref:
 
 ```bash
 pip install git+https://github.com/llm-d-incubation/llm-d-rl.git

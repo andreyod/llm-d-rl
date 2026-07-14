@@ -326,7 +326,7 @@ fi
 read -r -a EXTRA_OV <<< "${EXTRA_OVERRIDES:-}"
 
 # ── launch ────────────────────────────────────────────────────────────────────
-cd /opt/verl/examples/grpo_trainer
+cd /tmp/verl/verl/examples/grpo_trainer
 
 ROLLOUT_N=$N ROLLOUT_TP=$TP NGPUS_PER_NODE=8 TRAIN_BATCH_SIZE=256 PPO_MINI_BATCH_SIZE=128 \
 MODEL_PATH=${MODEL_PATH:-$DEF_MODEL} \

@@ -41,7 +41,7 @@ render() {
 render_retriever() {
   # BM25 retriever Deployment+Service (searchr1 task only). Scoped var list so the
   # $-quoted init-container script is left untouched.
-  envsubst '${NAMESPACE} ${IMG_RETRIEVER}' < retriever.yaml.tmpl
+  envsubst '${NAMESPACE} ${IMG_RETRIEVER}' < retriever/retriever.yaml.tmpl
 }
 
 create_configmap() {
@@ -49,8 +49,8 @@ create_configmap() {
   # build the ConfigMap from them (idempotent apply) into the configured
   # namespace. envoy.yaml is consumed by the llm-d stack (Envoy) integration.
   kubectl create configmap llmd-epp-configs \
-    --from-file=epp-config.yaml=epp-config.yaml \
-    --from-file=envoy.yaml=envoy.yaml \
+    --from-file=epp-config.yaml=../deploy/epp-config.yaml \
+    --from-file=envoy.yaml=../deploy/envoy.yaml \
     --from-file=searchr1_tool_config.yaml=searchr1_tool_config.yaml \
     --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -

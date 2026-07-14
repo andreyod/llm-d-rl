@@ -23,29 +23,11 @@ ARG BASE_IMAGE=verlai/verl:vllm018.dev1
 # never rebuilds verl.
 FROM ${BASE_IMAGE}
 
-# --- veRL from pinned commit ---
-ARG VERL_COMMIT=334d9f8b03816382cbd72e898bc8ae04efca6fbe
-RUN git clone https://github.com/volcengine/verl.git /opt/verl && \
-    cd /opt/verl && git checkout ${VERL_COMMIT} && \
-    pip install --no-deps -e .
-
-# --- cupy / numpy compatibility ---
-# The base image ships cupy 14.x (requires numpy>=2.0) but veRL pins numpy<2.0.0.
-# Downgrade cupy to 13.x which supports numpy 1.x.
-RUN pip install "cupy-cuda12x<14"
-
 # --- NIXL for vLLM NixlConnector (P/D KV transfer) ---
 # verl base images do not ship kv_connectors deps.
 # Without this, vLLM fails at engine init with: RuntimeError: NIXL is not available
 RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
     python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
-
-# --- Llmd binaries ---
-# EPP, Envoy, and the sidecar are intentionally NOT copied here. All three are
-# supplied at runtime from separate images by init containers into /opt/llm-d-bins,
-# selected via VERL_EPP_BINARY / VERL_ENVOY_BINARY (head) and VERL_SIDECAR_BINARY
-# (worker); push-epp.sh can overwrite the EPP live. So iterating on any of them
-# never rebuilds this ~28 GB image.
 
 
 # --- Vllm fixes ---

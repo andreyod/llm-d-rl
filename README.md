@@ -46,7 +46,7 @@ The integration launches three external processes at runtime. None of these bina
 
 ### 4. Copy the config files
 
-The following starting-point configs are provided in this repo — copy them to somewhere accessible on the head node and modify as needed for your workload:
+The following starting-point configs are provided in this repo — copy them to any path accessible on the head node, modify as needed, then pass those paths as Hydra overrides in step 5 (`epp_config_file`, `envoy_config`):
 
 - `deploy/epp-config.yaml` — EPP scorer config (standard routing)
 - `deploy/epp-config-pd.yaml` — EPP scorer config (PD disaggregated routing)

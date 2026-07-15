@@ -22,7 +22,36 @@ Note: the worker pod has two containers - add `-c ray-worker` to `kubectl exec`/
     "import llm_d_rl_verl_integration.llmd_epp.llm_client as m; print(m.__file__)"
   ```
 
-## 1. Per-request JSONL logging (reqlog)
+## 1. Ship benchmarks to the pod
+
+Copy the entire `benchmarks/` directory to the head pod once — scripts, workload configs, and
+data-prep scripts all land under `/tmp/benchmarks`:
+
+```bash
+kubectl cp $REPO/benchmarks $NS/$H:/tmp/benchmarks
+```
+
+### Data preparation (workloads with a `make_*.py` script)
+
+`gsm8k` and `geo3k` use built-in datasets and need no extra step.
+The following workloads require a one-time download + format pass before the first run:
+
+| Workload | Script |
+|----------|--------|
+| `hotpotqa` | `make_hotpotqa.py` |
+| `musique` | `make_musique.py` |
+| `quality` | `make_quality.py` |
+| `scotus_xl` | `make_scotus.py` |
+| `searchr1` | `make_searchr1.py` |
+
+Run the script for your chosen workload on the head pod:
+
+```bash
+# replace <workload> and <script> with values from the table above
+kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/<workload>/<script>.py
+```
+
+## 2. Per-request JSONL logging (reqlog)
 
 The logging is **built into the package** - no pod patching required.
 It is controlled entirely by the `VERL_REQLOG_DIR` environment variable:
@@ -36,57 +65,50 @@ Fields per record: `ts, request_id, endpoint, prompt_hash, prompt_tokens, output
 `prompt_hash` is a BLAKE2b-8 digest of the token IDs - requests sharing the same prompt
 (same GRPO group) will have matching hashes across replicas.
 
-## 2. vLLM /metrics scraper - head only
+## 3. vLLM /metrics scraper - head only
 
-Copy the scraper from the repo and start it before launching the run.
+Start the scraper before launching the run (the file is already on the pod from step 1).
 It reads `/tmp/epp-endpoints.yaml` (written by EPP at startup) each loop, scrapes every
 replica ~1.5s -> `/tmp/vllm_metrics.csv`. EPP-only (baseline writes no endpoints file).
 Requires pyyaml (present in the image).
 
-```bash
-kubectl cp $REPO/benchmarks/scripts/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
-```
-
 **Important caveat:** vLLM refreshes `prefix_cache_{hits,queries}_total` only every ~70-180s,
 so per-step windowed deltas are unusable. Report prefix-cache hit rate as a whole-run aggregate only.
 
-## 3. Launch script - head only
+## 4. Launch script - head only
 
-```bash
-kubectl cp $REPO/benchmarks/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
-# run_test.sh sources workloads/<task>/task.env, so ship the workloads too (falls back to /tmp/workloads)
-kubectl cp $REPO/workloads $NS/$H:/tmp/workloads
-```
+`run_test.sh` and the workload configs are already on the pod at `/tmp/benchmarks/scripts/` and
+`/tmp/benchmarks/workloads/` from step 1.
 
 Usage on the pod:
 ```bash
 # EPP run
-kubectl exec -n $NS $H -- bash /tmp/run_test.sh --mode epp
+kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode epp
 # baseline
-kubectl exec -n $NS $H -- bash /tmp/run_test.sh --mode native
+kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode native
 # custom knobs
-kubectl exec -n $NS $H -- bash /tmp/run_test.sh --mode epp --steps 20 --tp 2 --n 4
+kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode epp --steps 20 --tp 2 --n 4
 ```
 
 The EPP config (plugins) is loaded from the file set by `rollout.custom.epp_config_file`.
 In k8s this is mounted from the `llmd-epp-configs` ConfigMap (built from `deploy/epp-config.yaml`
 or `deploy/epp-config-pd.yaml` - see `deploy/kuberay/README.md` Step 2).
 
-## 4. Clean + start scraper + launch (head)
+## 5. Clean + start scraper + launch (head)
 
 ```bash
 # wipe accumulating dirs (reqlog is pid-named, logs is experiment-named)
 kubectl exec -n $NS $H --            bash -c 'rm -rf /tmp/verl/reqlog /tmp/verl/logs; mkdir -p /tmp/verl/reqlog'
 kubectl exec -n $NS $W -c ray-worker bash -c 'rm -rf /tmp/verl/reqlog; mkdir -p /tmp/verl/reqlog'
 # start scraper (truncate old CSV)
-kubectl exec -n $NS $H -- bash -c 'rm -f /tmp/vllm_metrics.csv; nohup python3 /tmp/vllm_scrape.py >/tmp/vllm_scrape.out 2>&1 &'
+kubectl exec -n $NS $H -- bash -c 'rm -f /tmp/vllm_metrics.csv; nohup python3 /tmp/benchmarks/scripts/vllm_scrape.py >/tmp/vllm_scrape.out 2>&1 &'
 # launch the run
-kubectl exec -n $NS $H -- bash -c 'nohup bash /tmp/run_test.sh --mode epp > /tmp/train.log 2>&1 & echo launched pid $!'
+kubectl exec -n $NS $H -- bash -c 'nohup bash /tmp/benchmarks/scripts/run_test.sh --mode epp > /tmp/train.log 2>&1 & echo launched pid $!'
 # confirm it started (after ~60-90s)
 kubectl exec -n $NS $H -- pgrep -fa main_ppo
 ```
 
-## 5. Wait + collect
+## 6. Wait + collect
 
 Use `rl_orchestrate.sh` (waits for main_ppo to exit, checks step count, collects artifacts with
 md5-verified cleanup). Set `RESULTS_DIR` for the output location (default `./verl-results`), then plot with your own tooling.

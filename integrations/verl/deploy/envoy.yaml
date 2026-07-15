@@ -86,6 +86,13 @@ static_resources:
       original_dst_lb_config:
         use_http_header: true
         http_header_name: x-gateway-destination-endpoint
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          common_http_protocol_options:
+            idle_timeout: 3s
+          explicit_http_config:
+            http_protocol_options: {}
 
     - name: ext_proc
       type: STATIC

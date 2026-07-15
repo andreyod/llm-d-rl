@@ -6,8 +6,8 @@ comprehension, NOT agentic search). Same shape as make_hotpotqa.py but with a lo
 MuSiQue ships ~20 candidate paragraphs per example (vs HotpotQA's 10), so prompts run ~2x
 longer while the answer stays short.
 
-Each example's prompt embeds the MuSiQue paragraphs + the question; the model emits a short
-answer inside <answer></answer>. Reward = normalized exact-match via verl's
+Each example's prompt embeds the MuSiQue paragraphs + the question; the model reasons inside
+<think></think> and emits a short answer inside <answer></answer>. Reward = normalized exact-match via verl's
 search_r1_like_qa_em, triggered by data_source="searchR1_musique" (already registered in
 verl's reward_score/__init__.py) and reward_model.ground_truth={"target": [answer, *answer_aliases]}.
 
@@ -21,14 +21,11 @@ import os
 import datasets
 import pandas as pd
 
-# Synthetic test: reasoning is disabled via Qwen3's "/no_think" soft switch and the model is asked
-# for the bare short answer, so decode collapses to ~tens of tokens - used to investigate the impact
-# of prompt/prefill length on rollout performance. Reward keys on the <answer>...</answer> tags via
-# search_r1_like_qa_em.
+# Reason step by step inside <think></think>, then give the final short answer inside <answer>.
 INSTRUCTION = (
-    "You are given several reference paragraphs and a question. Answer the question using only the "
-    "information in the paragraphs. Respond with ONLY the short answer wrapped in <answer> and "
-    "</answer> tags and nothing else, for example: <answer> Beijing </answer>.\n\n"
+    "You are given several reference paragraphs and a question. Read the paragraphs, reason step "
+    "by step inside <think> and </think>, then give the final short answer inside <answer> and "
+    "</answer> with no extra words. For example: <answer> Beijing </answer>.\n\n"
 )
 
 
@@ -63,7 +60,7 @@ def build(split, limit=None):
             INSTRUCTION
             + "Reference paragraphs:\n"
             + _context_block(ex["paragraphs"])
-            + f"\n\nQuestion: {ex['question']}\n\n/no_think"
+            + f"\n\nQuestion: {ex['question']}"
         )
         rows.append(
             {

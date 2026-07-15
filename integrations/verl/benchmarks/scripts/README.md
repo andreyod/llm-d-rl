@@ -85,7 +85,7 @@ Usage on the pod:
 kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode epp
 # baseline
 kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode native
-# custom knobs
+# custom knobs (add --task <name> to use a non-default workload, default: gsm8k)
 kubectl exec -n $NS $H -- bash /tmp/benchmarks/scripts/run_test.sh --mode epp --steps 20 --tp 2 --n 4
 ```
 
@@ -101,7 +101,7 @@ kubectl exec -n $NS $H --            bash -c 'rm -rf /tmp/verl/reqlog /tmp/verl/
 kubectl exec -n $NS $W -c ray-worker bash -c 'rm -rf /tmp/verl/reqlog; mkdir -p /tmp/verl/reqlog'
 # start scraper (truncate old CSV)
 kubectl exec -n $NS $H -- bash -c 'rm -f /tmp/vllm_metrics.csv; nohup python3 /tmp/benchmarks/scripts/vllm_scrape.py >/tmp/vllm_scrape.out 2>&1 &'
-# launch the run
+# launch the run (add --task <name> to use a non-default workload, default: gsm8k)
 kubectl exec -n $NS $H -- bash -c 'nohup bash /tmp/benchmarks/scripts/run_test.sh --mode epp > /tmp/train.log 2>&1 & echo launched pid $!'
 # confirm it started (after ~60-90s)
 kubectl exec -n $NS $H -- pgrep -fa main_ppo

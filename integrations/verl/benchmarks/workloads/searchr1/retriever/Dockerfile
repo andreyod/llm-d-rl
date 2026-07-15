@@ -5,8 +5,9 @@
 # BM25 (pyserini/Lucene) needs a JRE; the server also imports faiss/torch/transformers
 # at module scope, so those are installed even though the BM25 path doesn't use a GPU.
 #
-# Build + push (mirrors the other IMG_* images -> ghcr.io/ezrasilvera):
-#   docker build -f deploy/Dockerfile.searchr1-retriever -t ghcr.io/ezrasilvera/searchr1-retriever:bm25 deploy
+# Build + push (mirrors the other IMG_* images -> ghcr.io/ezrasilvera).
+# Context is the verl repo root ("." - the COPY path below is repo-root-relative), run from there:
+#   docker build -f benchmarks/workloads/searchr1/retriever/Dockerfile -t ghcr.io/ezrasilvera/searchr1-retriever:bm25 .
 #   docker push ghcr.io/ezrasilvera/searchr1-retriever:bm25
 # Then set IMG_RETRIEVER in deploy/deploy.env to that ref.
 
@@ -33,7 +34,7 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
         "huggingface_hub[cli]"
 
 WORKDIR /app
-COPY retriever/retrieval_server.py /app/retrieval_server.py
+COPY ./benchmarks/workloads/searchr1/retriever/retrieval_server.py /app/retrieval_server.py
 
 EXPOSE 8000
 # Launch args are supplied by the k8s manifest (index/corpus paths on the mounted volume).

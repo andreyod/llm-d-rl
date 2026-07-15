@@ -86,15 +86,10 @@ kubectl exec -n $NS $H -- bash -c 'nohup bash /tmp/run_test.sh --mode epp > /tmp
 kubectl exec -n $NS $H -- pgrep -fa main_ppo
 ```
 
-## 5. Wait + collect + graphs
+## 5. Wait + collect
 
 Use `rl_orchestrate.sh` (waits for main_ppo to exit, checks step count, collects artifacts with
-md5-verified cleanup), then:
-```bash
-cd ~/work/rl-work/verl-results
-python3 make_graphs.py        # static PNG/PDF - add the new run dir to the RUNS map first
-python3 make_interactive.py   # graphs.html
-```
+md5-verified cleanup). Set `RESULTS_DIR` for the output location (default `./verl-results`), then plot with your own tooling.
 
 Stop the scraper before collecting:
 ```bash

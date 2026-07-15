@@ -4,7 +4,7 @@
 set -uo pipefail
 # Namespace is per-user and comes from the environment. Mandatory, no default.
 NS="${NAMESPACE:?NAMESPACE not set - export NAMESPACE=<your-namespace>}"
-BASE="/home/ezra/work/rl-work/verl-results"
+BASE="${RESULTS_DIR:-./verl-results}"
 mkdir -p "$BASE"
 say(){ echo "[$(date '+%H:%M:%S')] $*"; }
 

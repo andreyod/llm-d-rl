@@ -32,12 +32,18 @@ No verl source changes are required - the whole integration is a single Hydra ov
 Both need no verl patches, and both support prefill/decode (PD) disaggregation. See
 [`docs/architecture.md`](docs/architecture.md).
 
-## Workloads
+## Benchmarks
 
-Each RL workload used with this integration lives in its own folder under
-[`benchmarks/workloads/`](benchmarks/workloads/) - a `task.env` with its verl overrides, its data
-builder, and (for Search-R1) its tool config and retriever service.
-`benchmarks/scripts/run_test.sh --task <name>` runs any of them.
+[`benchmarks/`](benchmarks/) is the performance-testing harness for the integration: it benchmarks
+rollout routing (native vs EPP) across multiple RL workloads and collects the results.
+
+- [`benchmarks/workloads/`](benchmarks/workloads/) - one folder per workload, each self-contained: a
+  `task.env` with its verl overrides, its data builder, and (for Search-R1) its tool config and
+  retriever service.
+- [`benchmarks/scripts/`](benchmarks/scripts/) - the run harness; `run_test.sh --task <name>` runs a
+  chosen workload in `native` or `epp` mode.
+- Result summaries live in each workload's README and in [`benchmarks/README.md`](benchmarks/README.md)
+  (raw run data is kept out of the repo).
 
 ---
 

@@ -26,7 +26,7 @@ The manifest template itself only needs edits for node/GPU layout:
   8-GPU option commented out. Enable whichever matches your node.
 - **Node placement** - the head co-locates onto the worker's node via `podAffinity`, and the
   worker is anchored to a GPU node by its `nvidia.com/gpu` request. The worker `nodeAffinity`
-  has a `NotIn` list excluding known-faulty GPU hosts (e.g. `pokprod-b93r44s3`) - edit that
+  has a `NotIn` list excluding known-faulty GPU hosts (e.g. `<faulty-node-name>`) - edit that
   list for your cluster.
 
 None of the EPP, Envoy, or sidecar binaries are baked into the verl image. On the head the

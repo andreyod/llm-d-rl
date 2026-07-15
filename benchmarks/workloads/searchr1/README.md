@@ -8,7 +8,7 @@ TODO: what this workload measures and why (prompt/decode profile, reward), and t
 
 ## Results summary
 
-TODO: headline native-vs-EPP numbers for this workload. Raw runs live under `~/work/rl-work/verl-results/` (not committed).
+TODO: headline native-vs-EPP numbers for this workload. Raw runs are kept out of the repo (not committed).
 
 ## Files
 

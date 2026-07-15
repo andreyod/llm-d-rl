@@ -26,9 +26,8 @@ so the numeric code or the issue-area name scores). Builder: `../scotus/make_sco
   - native = verl least-in-flight load balancer (sticky session, request_id -> replica).
   - EPP as the verl endpoint picker = llm-d burst prefix-cache producer with `balanceBy: tokens`
     and `windowDurationMs: 1000` (covers the ~0.86s per-step rollout arrival burst).
-- Runs: `scotus_xl_{native,epp}_30s` (30 steps each, 8 replicas).
-- Note: these results use the brief-CoT variant (response 2048) via the overrides in Reproduce
-  below; the workload's `task.env` default is the direct-label (`/no_think`) formulation.
+- Runs: `scotus_xl_{native,epp}_30s` (30 steps each, 8 replicas). These are the `task.env` defaults
+  (brief CoT, `max_response_length=2048`).
 
 ## Results summary
 
@@ -55,10 +54,9 @@ Raw run data is kept out of the repo.
 ## Reproduce
 
 ```bash
-TASK=scotus_xl MAX_RESPONSE_LENGTH=2048 \
-  TRAIN_FILE=/tmp/verl/data/scotus_xl_cot/train.parquet \
-  TEST_FILE=/tmp/verl/data/scotus_xl_cot/test.parquet \
-  benchmarks/scripts/run_test.sh --mode <native|epp> --steps 30
+# build the data once (CoT), then run each arm
+python3 benchmarks/workloads/scotus/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
+benchmarks/scripts/run_test.sh --task scotus_xl --mode <native|epp> --steps 30
 ```
 
 The EPP arm needs `deploy/epp-config.yaml` with `windowDurationMs: 1000` + `balanceBy: tokens` and

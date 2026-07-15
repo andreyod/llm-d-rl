@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-d-rl-verl-integration"
+version = "0.1.0"
+description = "llm-d EPP router and Envoy integrations for verl"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ray",
+    "omegaconf",
+    "grpcio",
+    "aiohttp",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_d_rl_verl_integration*"]

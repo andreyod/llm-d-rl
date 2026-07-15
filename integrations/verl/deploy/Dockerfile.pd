@@ -1,0 +1,77 @@
+# Integration image for llm-d RL verl — vLLM 0.18.x build.
+#
+# Differences from Dockerfile.llmd-vllm-v18-dev:
+#   - No local verl source COPY; verl is installed from a pinned git commit.
+#   - No Go build stage and no binary COPY: the EPP, Envoy, and sidecar binaries
+#     are all supplied at runtime by init containers, not baked into this image.
+#
+# Build (from the repo root — no local source context required):
+#   podman build \
+#     -f deploy/Dockerfile.pd \
+#     --platform linux/amd64 \
+#     --build-arg VERL_COMMIT=<commit-sha> \
+#     -t <your-registry>/verl:vllm018-llm-d-integration \
+#     .
+#
+ARG BASE_IMAGE=verlai/verl:vllm018.dev1
+
+# NOTE: no epp-source, envoy-source, or sidecar-source stage. The EPP, Envoy,
+# and sidecar binaries are intentionally NOT baked into this image; they are
+# supplied at runtime from SEPARATE images by init containers (EPP + Envoy on the
+# head via fetch-binaries, the sidecar on the worker via fetch-sidecar; see
+# deploy/ray-cluster.yaml.tmpl and deploy/deploy.env), so iterating on any of them
+# never rebuilds verl.
+FROM ${BASE_IMAGE}
+
+# --- NIXL for vLLM NixlConnector (P/D KV transfer) ---
+# verl base images do not ship kv_connectors deps.
+# Without this, vLLM fails at engine init with: RuntimeError: NIXL is not available
+RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
+    python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
+
+
+# --- Vllm fixes ---
+# ---  Fix vLLM disagg/serving.py — forward kv_transfer_params to engine ---
+# /inference/v1/generate receives kv_transfer_params (do_remote_decode=true) from the
+# llm-d sidecar but disagg/serving.py never copies it into sampling_params.extra_args.
+# The NixlConnector reads it from sampling_params.extra_args.get("kv_transfer_params"),
+# so without this patch it always sees None and returns kv_transfer_params=null, meaning
+# no KV cache is transferred between prefill and decode.
+# Root cause confirmed in vLLM debug logs (NIXLConnector request_finished kv_transfer_params=None).
+# This path is specific to /inference/v1/generate (token-in token-out); /v1/chat/completions
+# already forwards kv_transfer_params correctly, which is why other deployments work.
+RUN sed -i \
+    's/        result_generator = self\.engine_client\.generate(/        if request.kv_transfer_params:\n            if sampling_params.extra_args is None:\n                sampling_params.extra_args = {}\n            sampling_params.extra_args["kv_transfer_params"] = request.kv_transfer_params\n\n        result_generator = self.engine_client.generate(/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/serve/disagg/serving.py
+
+# --- Fix vLLM sleep() — drain NIXL notifications before reset_prefix_cache ---
+# When EngineCore goes idle after generation, NIXL "read complete" notifications may
+# still be in the worker queue (decode confirmed receipt but prefill hasn't processed it).
+# reset_prefix_cache() then fails: "blocks not freed yet — remote KV transfer not supported".
+# Fix: add drain_kv_connector() that polls get_finished() without a forward pass, called
+# from _reset_caches() before reset_prefix_cache(). Pending PR: vllm-project/vllm#42644.
+
+# scheduler.py: add has_pending_connector_sends() + free_finished_connector_sends()
+RUN sed -i \
+    's/        return len(self\.finished_req_ids) > 0/        return len(self.finished_req_ids) > 0\n\n    def has_pending_connector_sends(self):\n        return self.connector is not None and bool(self.requests)\n\n    def free_finished_connector_sends(self, finished_sending):\n        for req_id in finished_sending:\n            if req_id in self.requests:\n                self._free_blocks(self.requests[req_id])/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py
+
+# gpu_worker.py: add drain_kv_connector()
+RUN sed -i \
+    's/        self\.model_runner\._dummy_run(1, uniform_decode=True)/        self.model_runner._dummy_run(1, uniform_decode=True)\n\n    def drain_kv_connector(self):\n        if not has_kv_transfer_group():\n            return set()\n        connector = get_kv_transfer_group()\n        finished_sending, _ = connector.get_finished(set())\n        return finished_sending/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py
+
+# abstract.py: add drain_kv_connector() RPC
+RUN sed -i \
+    's/        self\.collective_rpc("execute_dummy_batch")/        self.collective_rpc("execute_dummy_batch")\n\n    def drain_kv_connector(self):\n        output = self.collective_rpc("drain_kv_connector")\n        result = set()\n        for s in output:\n            result.update(s)\n        return result/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/v1/executor/abstract.py
+
+# core.py: add EngineCore.drain_kv_connector() after execute_dummy_batch
+RUN sed -i \
+    's/        self\.model_executor\.execute_dummy_batch()/        self.model_executor.execute_dummy_batch()\n\n    def drain_kv_connector(self):\n        if not self.scheduler.has_pending_connector_sends():\n            return\n        finished_sending = self.model_executor.drain_kv_connector()\n        self.scheduler.free_finished_connector_sends(finished_sending)/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py
+
+# core.py: call drain_kv_connector() in _reset_caches before reset_prefix_cache
+RUN sed -i \
+    's/        self\.reset_prefix_cache(reset_running_requests=reset_running_requests)/        self.drain_kv_connector()\n        self.reset_prefix_cache(reset_running_requests=reset_running_requests)/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py

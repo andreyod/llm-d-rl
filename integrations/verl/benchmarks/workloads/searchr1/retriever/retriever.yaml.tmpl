@@ -1,0 +1,123 @@
+# BM25 Search-R1 retrieval server: Deployment + Service for the agentic searchr1 task.
+#
+# Rendered by deploy.sh (envsubst ${NAMESPACE} ${IMG_RETRIEVER}) and applied alongside the
+# RayCluster. CPU-only (no GPU), so it never competes with training for the H200s. This is the
+# repo's first standalone Deployment/Service - the RayCluster CRD hosts only Ray pods, so the
+# retriever lives in its own manifest.
+#
+# The verl search tool reaches it at http://searchr1-retriever:8000/retrieve (bare Service name
+# resolves within the namespace); see deploy/searchr1_tool_config.yaml.
+#
+# Storage: an emptyDir on node ephemeral disk (the repo has no PVC; large data is re-fetched at
+# pod start, matching the RayCluster convention). The init container downloads the prebuilt BM25
+# Lucene index (+ the wiki-18 corpus as a fallback) from HuggingFace; the index load takes a few
+# minutes, gated by the startupProbe.
+#
+# FIRST BRING-UP NOTE: verify the downloaded index layout - if PeterJinGo/wiki-18-bm25-index nests
+# the Lucene files under a subdir, point --index_path at that subdir. If the index was built with
+# stored raw docs (Search-R1 default), the corpus download is unused and can be dropped to save time.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searchr1-retriever
+  namespace: ${NAMESPACE}
+  labels:
+    app: searchr1-retriever
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: searchr1-retriever
+  template:
+    metadata:
+      labels:
+        app: searchr1-retriever
+    spec:
+      # ghcr.io/ezrasilvera/searchr1-retriever is pushed private, so unlike the public
+      # IMG_VERL the retriever needs a pull secret. Create it once with:
+      #   kubectl create secret generic ghcr-pull -n $NAMESPACE \
+      #     --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+      #     --type=kubernetes.io/dockerconfigjson
+      # (or make the ghcr package public and drop this).
+      imagePullSecrets:
+        - name: ghcr-pull
+      initContainers:
+        - name: fetch-index
+          image: ${IMG_RETRIEVER}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # huggingface_hub 1.x deprecated `huggingface-cli`; use snapshot_download (version-robust).
+              echo "downloading BM25 Lucene index..."
+              python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='PeterJinGo/wiki-18-bm25-index', repo_type='dataset', local_dir='/data/bm25')"
+              echo "downloading wiki-18 corpus (fallback if the index has no stored raw docs)..."
+              python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='PeterJinGo/wiki-18-corpus', repo_type='dataset', local_dir='/data/corpus')"
+              if [ -f /data/corpus/wiki-18.jsonl.gz ]; then
+                echo "gunzip corpus..."; gunzip -f /data/corpus/wiki-18.jsonl.gz
+              fi
+              echo "index dir contents:"; ls -la /data/bm25 | head
+          volumeMounts:
+            - name: index-data
+              mountPath: /data
+      containers:
+        - name: retriever
+          image: ${IMG_RETRIEVER}
+          command:
+            - python
+            - /app/retrieval_server.py
+            - --retriever_name=bm25
+            # The HF dataset nests the Lucene index one level down (/data/bm25/bm25).
+            - --index_path=/data/bm25/bm25
+            - --corpus_path=/data/corpus/wiki-18.jsonl
+            - --topk=3
+          env:
+            # pyserini's encode module eagerly constructs an openai.OpenAI() client at import
+            # (pyserini.encode._openai), which raises without a key. BM25 never calls OpenAI, so
+            # a dummy key just satisfies the constructor.
+            - name: OPENAI_API_KEY
+              value: "sk-noop"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "8"
+              memory: 24Gi
+            limits:
+              cpu: "16"
+              memory: 64Gi
+          # uvicorn only binds :8000 after the retriever finishes loading the index, so a TCP
+          # check on 8000 is a true readiness signal. startupProbe allows a slow (minutes) load.
+          startupProbe:
+            tcpSocket:
+              port: 8000
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            periodSeconds: 15
+          volumeMounts:
+            - name: index-data
+              mountPath: /data
+      volumes:
+        - name: index-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searchr1-retriever
+  namespace: ${NAMESPACE}
+  labels:
+    app: searchr1-retriever
+spec:
+  selector:
+    app: searchr1-retriever
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

@@ -97,12 +97,12 @@ fi
 # workload means adding a folder; this driver does not change.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resolve the workloads dir: explicit WORKLOADS_DIR override, else the repo layout
-# (deploy/scripts -> ../../workloads), else /tmp/workloads (where run_on_head.sh copies
+# (benchmarks/scripts -> ../workloads), else /tmp/workloads (where run_on_head.sh copies
 # the selected workload folder alongside run_test.sh on the head pod).
 WORKLOADS_DIR="${WORKLOADS_DIR:-}"
 if [[ -z "$WORKLOADS_DIR" ]]; then
-  if [[ -d "$SCRIPT_DIR/../../workloads" ]]; then
-    WORKLOADS_DIR="$(cd "$SCRIPT_DIR/../../workloads" && pwd)"
+  if [[ -d "$SCRIPT_DIR/../workloads" ]]; then
+    WORKLOADS_DIR="$(cd "$SCRIPT_DIR/../workloads" && pwd)"
   elif [[ -d /tmp/workloads ]]; then
     WORKLOADS_DIR=/tmp/workloads
   fi

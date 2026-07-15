@@ -13,8 +13,8 @@ The manifest has a **4-GPU** worker option active by default; an 8-GPU option is
 
 - **Namespace (required)** - export it in your shell: `export NAMESPACE=<your-namespace>`.
   It is not stored in a file (it is per-user, and keeping it out of `deploy.env` avoids
-  committing a personal namespace). `deploy/kuberay/deploy.sh`, `deploy/scripts/utils/push-epp.sh`,
-  `deploy/scripts/benchmarks/rl_orchestrate.sh`, and `deploy/scripts/run_on_head.sh` read it from the
+  committing a personal namespace). `deploy/kuberay/deploy.sh`, `benchmarks/scripts/utils/push-epp.sh`,
+  `benchmarks/scripts/rl_orchestrate.sh`, and `benchmarks/scripts/run_on_head.sh` read it from the
   environment and **fail fast** if it is unset.
 - **Images** - every runtime image (verl, crane, EPP, Envoy) is defined in `deploy.env`.
   Edit tags there rather than in the manifest; `deploy.sh` substitutes them (and `NAMESPACE`)
@@ -32,7 +32,7 @@ The manifest template itself only needs edits for node/GPU layout:
 None of the EPP, Envoy, or sidecar binaries are baked into the verl image. On the head the
 `fetch-binaries` init container extracts the EPP and Envoy (`IMG_EPP`, `IMG_ENVOY`); on the
 worker the `fetch-sidecar` init container extracts the sidecar (`IMG_SIDECAR`) - all set in
-`deploy.env` and pulled on pod start. Use `deploy/scripts/utils/push-epp.sh` to push a new EPP into a
+`deploy.env` and pulled on pod start. Use `benchmarks/scripts/utils/push-epp.sh` to push a new EPP into a
 running pod without recreating it. See the [deployment guide](../README.md) for details on the binaries.
 
 ## Step 2 - Deploy
@@ -65,8 +65,8 @@ Running a job normally means logging into the head pod and launching training fr
 there (the [Manual](#manual-all-modes) path below). Two scripts automate that so a
 run is a single command from your laptop:
 
-- `deploy/scripts/run_on_head.sh` - laptop-side launcher: resolves the head pod by its Ray label, copies `run_test.sh` and the selected `workloads/<task>/` folder onto it, and runs it there (namespace from `$NAMESPACE`).
-- `deploy/scripts/run_test.sh` - runs on the pod: sources `workloads/<task>/task.env` for the dataset/overrides and wraps verl's `run_qwen3_4b_fsdp.sh` with the right Hydra overrides for the chosen `--mode`.
+- `benchmarks/scripts/run_on_head.sh` - laptop-side launcher: resolves the head pod by its Ray label, copies `run_test.sh` and the selected `workloads/<task>/` folder onto it, and runs it there (namespace from `$NAMESPACE`).
+- `benchmarks/scripts/run_test.sh` - runs on the pod: sources `workloads/<task>/task.env` for the dataset/overrides and wraps verl's `run_qwen3_4b_fsdp.sh` with the right Hydra overrides for the chosen `--mode`.
 
 Where modes (`--mode`):
 
@@ -75,14 +75,14 @@ Where modes (`--mode`):
 - `llm-d` - Envoy + EPP HTTP stack (the "llm-d serving" mode); not yet implemented in `run_test.sh`.
 
 Other options (`--steps`, `--tp`, `--n`, `--name`, `--reqlog`) and their defaults
-are documented in the header comment of [deploy/scripts/run_test.sh](../scripts/run_test.sh).
-`deploy/scripts/run_on_head.sh --help` covers the launcher's own flags.
+are documented in the header comment of [benchmarks/scripts/run_test.sh](../../benchmarks/scripts/run_test.sh).
+`benchmarks/scripts/run_on_head.sh --help` covers the launcher's own flags.
 
 Examples:
 ```bash
-deploy/scripts/run_on_head.sh --mode epp                    # background on the pod, EPP picks the endpoint, tails the log
-deploy/scripts/run_on_head.sh --fg --mode native            # run attached (foreground), verl's native routing
-deploy/scripts/run_on_head.sh --mode epp --steps 20 --tp 2
+benchmarks/scripts/run_on_head.sh --mode epp                    # background on the pod, EPP picks the endpoint, tails the log
+benchmarks/scripts/run_on_head.sh --fg --mode native            # run attached (foreground), verl's native routing
+benchmarks/scripts/run_on_head.sh --mode epp --steps 20 --tp 2
 ```
 
 By default `run_on_head.sh` executes on the pod in the background (survives a laptop

@@ -44,7 +44,7 @@ replica ~1.5s -> `/tmp/vllm_metrics.csv`. EPP-only (baseline writes no endpoints
 Requires pyyaml (present in the image).
 
 ```bash
-kubectl cp $REPO/deploy/scripts/benchmarks/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
+kubectl cp $REPO/benchmarks/scripts/vllm_scrape.py $NS/$H:/tmp/vllm_scrape.py
 ```
 
 **Important caveat:** vLLM refreshes `prefix_cache_{hits,queries}_total` only every ~70-180s,
@@ -53,7 +53,7 @@ so per-step windowed deltas are unusable. Report prefix-cache hit rate as a whol
 ## 3. Launch script - head only
 
 ```bash
-kubectl cp $REPO/deploy/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
+kubectl cp $REPO/benchmarks/scripts/run_test.sh $NS/$H:/tmp/run_test.sh
 # run_test.sh sources workloads/<task>/task.env, so ship the workloads too (falls back to /tmp/workloads)
 kubectl cp $REPO/workloads $NS/$H:/tmp/workloads
 ```

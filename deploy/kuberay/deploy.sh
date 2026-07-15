@@ -41,7 +41,7 @@ render() {
 render_retriever() {
   # BM25 retriever Deployment+Service (searchr1 workload only). Scoped var list so the
   # $-quoted init-container script is left untouched.
-  envsubst '${NAMESPACE} ${IMG_RETRIEVER}' < ../../workloads/searchr1/retriever/retriever.yaml.tmpl
+  envsubst '${NAMESPACE} ${IMG_RETRIEVER}' < ../../benchmarks/workloads/searchr1/retriever/retriever.yaml.tmpl
 }
 
 create_configmap() {
@@ -51,7 +51,7 @@ create_configmap() {
   kubectl create configmap llmd-epp-configs \
     --from-file=epp-config.yaml=../epp-config.yaml \
     --from-file=envoy.yaml=../envoy.yaml \
-    --from-file=searchr1_tool_config.yaml=../../workloads/searchr1/tool_config.yaml \
+    --from-file=searchr1_tool_config.yaml=../../benchmarks/workloads/searchr1/tool_config.yaml \
     --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -
 }

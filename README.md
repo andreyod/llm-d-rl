@@ -35,9 +35,9 @@ Both need no verl patches, and both support prefill/decode (PD) disaggregation. 
 ## Workloads
 
 Each RL workload used with this integration lives in its own folder under
-[`workloads/`](workloads/) - a `task.env` with its verl overrides, its data builder, and (for
-Search-R1) its tool config and retriever service. `deploy/scripts/run_test.sh --task <name>` runs
-any of them.
+[`benchmarks/workloads/`](benchmarks/workloads/) - a `task.env` with its verl overrides, its data
+builder, and (for Search-R1) its tool config and retriever service.
+`benchmarks/scripts/run_test.sh --task <name>` runs any of them.
 
 ---
 

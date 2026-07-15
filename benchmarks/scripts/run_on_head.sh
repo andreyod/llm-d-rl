@@ -55,7 +55,7 @@ kubectl cp "$SCRIPT_DIR/run_test.sh" "$NS/$HEAD:/tmp/run_test.sh"
 
 # Ship the selected workload folder so run_test.sh can source workloads/<task>/task.env
 # on the pod (it falls back to /tmp/workloads when run from /tmp/run_test.sh).
-WLDIR="$SCRIPT_DIR/../../workloads/$TASK"
+WLDIR="$SCRIPT_DIR/../workloads/$TASK"
 if [ -d "$WLDIR" ]; then
   echo "==> copying workload '$TASK' to $HEAD:/tmp/workloads/$TASK"
   kubectl exec -n "$NS" "$HEAD" -- mkdir -p /tmp/workloads

@@ -33,18 +33,17 @@ kubectl cp $REPO/benchmarks $NS/$H:/tmp/benchmarks
 
 ### Data preparation (workloads with a `make_*.py` script)
 
-`gsm8k` and `geo3k` use built-in datasets and need no extra step.
-The following workloads require a one-time download + format pass before the first run:
-
-| Workload | Script |
-|----------|--------|
+| Workload | Data prep script |
+|----------|-----------------|
+| `gsm8k` | — (built-in dataset) |
+| `geo3k` | — (built-in dataset) |
 | `hotpotqa` | `make_hotpotqa.py` |
 | `musique` | `make_musique.py` |
 | `quality` | `make_quality.py` |
 | `scotus_xl` | `make_scotus.py` |
 | `searchr1` | `make_searchr1.py` |
 
-Run the script for your chosen workload on the head pod:
+For workloads with a script, run it once on the head pod before the first experiment:
 
 ```bash
 # replace <workload> and <script> with values from the table above

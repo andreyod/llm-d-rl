@@ -47,7 +47,7 @@ rollout routing (native vs EPP) across multiple RL workloads and collects the re
 
 ---
 
-This package is developed as the `verl` integration of
-[llm-d-rl](https://github.com/llm-d-incubation/llm-d-rl); when vendored there it lives at
+This package is the `verl` integration of
+[llm-d-rl](https://github.com/llm-d-incubation/llm-d-rl), where it lives at
 `integrations/verl/`. Its Python distribution is `llm-d-rl-verl-integration` (package
 `llm_d_rl_verl_integration`).

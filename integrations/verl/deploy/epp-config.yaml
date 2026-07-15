@@ -50,7 +50,7 @@ plugins:
       maxBatchSize: 10000
       # Balance placement across replicas by prefix-block (token) load, not request
       # count. Spreads long-prompt groups so no replica saturates KV on stacked large
-      # prefixes (the scotus straggler: sample-balanced gives even request counts but
+      # prefixes (the scotus_xl straggler: sample-balanced gives even request counts but
       # ~5x token imbalance). Requires the balance-tokens EPP build. "requests" = default.
       balanceBy: tokens
 

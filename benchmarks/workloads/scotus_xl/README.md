@@ -31,9 +31,12 @@ so the numeric code or the issue-area name scores). Builder: `../scotus/make_sco
 
 ## Results summary
 
+<img src="rollout-time-per-step.png" width="75%" alt="SCOTUS - rollout time per step: Native Verl vs Verl+llm-d-EPP">
+
+
 Using EPP as the verl endpoint picker (vs native least-in-flight), steady-state over steps 2-30:
 
-1. Rollout generation time per step reduced ~30% (91.7s -> 64.5s).
+1. Mean rollout time per step reduced ~31% (88.44s -> 61.08s).
 2. Prefix-cache hit rate improved from 12% to 85%.
 3. Per-replica KV utilization no longer saturated (native 100% on every replica -> 78% / 63%).
 4. Slowest-replica (straggler) generation time reduced ~31% (88.0s -> 60.8s).
@@ -41,7 +44,8 @@ Using EPP as the verl endpoint picker (vs native least-in-flight), steady-state 
 
 | metric | native | EPP (token-balanced burst) | diff |
 |---|---|---|---|
-| rollout generation time / step (`timing_s/gen`) | 91.7 s | 64.5 s | -29.7% |
+| mean rollout / step (reqlog full-span) | 88.44 s | 61.08 s | -30.9% |
+| verl `timing_s/gen` (adds ~3s driver overhead) | 91.79 s | 64.62 s | -29.6% |
 | generate_sequences mean / replica | 49.7 s | 36.2 s | -27.2% |
 | generate_sequences slowest (straggler) | 88.0 s | 60.8 s | -30.9% |
 | straggler ratio (slowest / mean) | 1.77x | 1.68x | -5.1% |
@@ -49,7 +53,9 @@ Using EPP as the verl endpoint picker (vs native least-in-flight), steady-state 
 | prefix-cache hit rate (lifetime, 8 replicas) | 12.2% | 84.5% | +72.3 pts |
 | val accuracy (step 0 -> 30) | 0.513 -> 0.661 | 0.531 -> 0.661 | parity |
 
-Raw run data is kept out of the repo.
+Per-request generation latency (`gen_s`) percentiles - the straggler tail shrinks with EPP:
+
+<img src="latency-percentiles.png" width="75%" alt="SCOTUS - per-request latency percentiles: Native Verl vs Verl+llm-d-EPP">
 
 ## Reproduce
 

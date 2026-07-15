@@ -3,7 +3,7 @@
 Large-input SCOTUS issue-area classification (LexGLUE SCOTUS): read a full U.S. Supreme Court
 opinion and assign exactly one of 13 Spaeth issue-area labels. Single-turn; very large input, short
 output. Reward = normalized exact-match (`data_source=searchR1_nq`; `ground_truth.target=[code, name]`,
-so the numeric code or the issue-area name scores). Builder: `../scotus/make_scotus.py`.
+so the numeric code or the issue-area name scores). Builder: `make_scotus.py`.
 
 ## Task and data
 
@@ -61,7 +61,7 @@ Per-request generation latency (`gen_s`) percentiles - the straggler tail shrink
 
 ```bash
 # build the data once (CoT), then run each arm
-python3 benchmarks/workloads/scotus/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
+python3 benchmarks/workloads/scotus_xl/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
 benchmarks/scripts/run_test.sh --task scotus_xl --mode <native|epp> --steps 30
 ```
 

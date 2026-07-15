@@ -1,0 +1,32 @@
+# verl multi-turn tool config for the agentic Search-R1 task.
+#
+# Loaded by verl's ToolAgentLoop via actor_rollout_ref.rollout.multi_turn.tool_config_path.
+# Built into the llmd-epp-configs ConfigMap by deploy.sh, so it mounts on both the head
+# and worker pods at /etc/llmd-configs/searchr1_tool_config.yaml (same mount as epp-config).
+#
+# The tool name MUST be "search": it has to match both the model's tool call and the
+# dataset's extra_info.tools_kwargs["search"] (see _replay_kit/make_searchr1.py) so the
+# per-sample create_kwargs are routed to this tool.
+#
+# retrieval_service_url points at the in-namespace BM25 retriever Service (deploy/retriever.yaml.tmpl);
+# a bare Service name resolves within the same namespace.
+
+tools:
+  - class_name: "llm_d_rl_verl_integration.tools.search_tool.SearchTool"
+    config:
+      retrieval_service_url: "http://searchr1-retriever:8000/retrieve"
+      topk: 3
+      timeout_s: 30
+      type: native            # required by verl's tool registry (ToolType.NATIVE)
+    tool_schema:
+      type: function
+      function:
+        name: search
+        description: "Search a Wikipedia corpus and return the top passages for each query. Use it whenever you lack the knowledge to answer."
+        parameters:
+          type: object
+          properties:
+            query_list:
+              type: array
+              description: "A list of one or more fully-formed search queries."
+          required: ["query_list"]

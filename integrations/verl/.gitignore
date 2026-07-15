@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.whl
+*.tar.gz
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Runtime / temp files
+/tmp/
+*.log
+*.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code local agent dir
+.claude/
+
+# macOS
+.DS_Store
+
+# Secrets / local config
+.env
+*.local

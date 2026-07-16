@@ -114,7 +114,7 @@ class LlmdActor:
             "--metrics-port", "9090",
             "--secure-serving=false",
             "--tracing=false",
-            f"-v={os.environ.get('VERL_EPP_VERBOSITY', '0')}",
+            f"-v={os.environ.get('VERL_EPP_VERBOSITY', '1')}",
         ]
         env = {**os.environ, "POD_NAME": pod_name}
         logger.info("[LlmdActor] starting EPP: %s", " ".join(cmd))

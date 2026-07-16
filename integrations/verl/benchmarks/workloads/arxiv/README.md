@@ -36,10 +36,13 @@ name]`, so the arXiv category code or its descriptive name scores). Builder: `ma
 
 ## Results summary
 
-Runs: `arxiv_{native,epp}_10s` (10 steps each, 8 replicas). Using EPP as the verl endpoint picker
-(vs native least-in-flight), steady-state over steps 2-10:
+Runs: `arxiv_{native,epp}_10s` (10 steps each, 8 replicas).
 
-1. Mean rollout time per step reduced ~30% (151.7s -> 106.1s).
+<img src="rollout-time-per-step.png" width="75%" alt="arXiv - rollout time per step: Native Verl vs Verl+llm-d-EPP">
+
+Using EPP as the verl endpoint picker (vs native least-in-flight), steady-state over steps 2-10:
+
+1. Mean rollout time per step reduced ~31% (reqlog full-span 148.2s -> 102.2s).
 2. Slowest-replica (straggler) generation time reduced ~31% (147.4s -> 101.8s).
 3. Per-request generation is faster at every percentile (the straggler tail shrinks).
 4. Validation accuracy tracked together (native 0.662 -> 0.782, EPP 0.681 -> 0.764 over 10 steps) -
@@ -47,21 +50,27 @@ Runs: `arxiv_{native,epp}_10s` (10 steps each, 8 replicas). Using EPP as the ver
 
 | metric | native | EPP (token-balanced burst) | diff |
 |---|---|---|---|
+| mean rollout / step (reqlog full-span) | 148.2 s | 102.2 s | -31.0% |
 | mean rollout / step (verl `timing_s/gen`) | 151.7 s | 106.1 s | -30.1% |
-| mean rollout / step (reqlog full-span) | 151.2 s | 105.8 s | -30.0% |
 | generate_sequences mean / replica | 81.7 s | 61.3 s | -25.0% |
 | generate_sequences slowest (straggler) | 147.4 s | 101.8 s | -30.9% |
 | straggler ratio (slowest / mean) | 1.80x | 1.66x | -7.8% |
 | full step time (`timing_s/step`, training-dominated) | 955.3 s | 910.1 s | -4.7% |
+| gen_s p50 / p90 / p99 (per request) | 82 / 132 / 145 s | 59 / 81 / 96 s | tail shrinks |
 | prompt_length mean (sanity: same data) | 12,890 | 12,890 | - |
 | response_length mean (non-clipping) | 628 | 619 | - |
 | val accuracy (step 0 -> 10) | 0.662 -> 0.782 | 0.681 -> 0.764 | parity |
 
+Per-request generation latency (`gen_s`) percentiles - the straggler tail shrinks with EPP:
+
+<img src="latency-percentiles.png" width="75%" alt="arXiv - per-request latency percentiles: Native Verl vs Verl+llm-d-EPP">
+
 Notes: rollout generation is only a fraction of the training-dominated full step (update_actor alone
-is ~550 s/step), so the ~30% rollout-generation win nets ~5% on the full step. The prefix-cache hit
-rate and per-replica KV utilization (from the vLLM `/metrics` scrape) are not reported for this pair;
-the scotus_xl workload (the legal analog of this task) documents them for the same routing mechanism
-(native re-prefills each document 8x and saturates KV; EPP co-locates the group and prefills once).
+is ~550 s/step), so the ~31% rollout-generation win nets ~5% on the full step. The vLLM `/metrics`
+scrape (prefix-cache hit rate, per-replica KV utilization) was not collected for this run, so those
+metrics are omitted here; the rollout-time and latency behaviour is consistent with the large-input
+`scotus_xl` classification analog (the long shared paper is co-located and prefilled once instead of
+re-prefilled per group sample).
 
 ## Reproduce
 

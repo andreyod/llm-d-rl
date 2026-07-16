@@ -36,33 +36,32 @@ name]`, so the arXiv category code or its descriptive name scores). Builder: `ma
 
 ## Results summary
 
-Runs: `arxiv_{native,epp}_5s` (5 steps each, 8 replicas). Using EPP as the verl endpoint picker
-(vs native least-in-flight), steady-state over steps 2-5:
+Runs: `arxiv_{native,epp}_10s` (10 steps each, 8 replicas). Using EPP as the verl endpoint picker
+(vs native least-in-flight), steady-state over steps 2-10:
 
-1. Mean rollout time per step reduced ~28% (149.2s -> 107.9s).
-2. Slowest-replica (straggler) generation time reduced ~28% (144.9s -> 103.7s).
+1. Mean rollout time per step reduced ~30% (151.7s -> 106.1s).
+2. Slowest-replica (straggler) generation time reduced ~31% (147.4s -> 101.8s).
 3. Per-request generation is faster at every percentile (the straggler tail shrinks).
-4. Validation accuracy tracked together (native 0.681 -> 0.713, EPP 0.639 -> 0.699 over 5 steps;
-   parity within run-to-run noise at this step count) - no accuracy change from routing.
+4. Validation accuracy tracked together (native 0.662 -> 0.782, EPP 0.681 -> 0.764 over 10 steps) -
+   no accuracy change from routing.
 
 | metric | native | EPP (token-balanced burst) | diff |
 |---|---|---|---|
-| mean rollout / step (verl `timing_s/gen`) | 149.2 s | 107.9 s | -27.7% |
-| mean rollout / step (reqlog full-span) | ~145 s | ~104 s | ~-28% |
-| generate_sequences mean / replica | 80.9 s | 61.2 s | -24.3% |
-| generate_sequences slowest (straggler) | 144.9 s | 103.7 s | -28.5% |
-| straggler ratio (slowest / mean) | 1.79x | 1.68x | -6.1% |
-| full step time (`timing_s/step`, training-dominated) | 958.6 s | 918.8 s | -4.1% |
-| prompt_length mean (sanity: same data) | 12,967 | 12,967 | - |
-| response_length mean (non-clipping) | 608 | 615 | - |
-| val accuracy (step 0 -> 5) | 0.681 -> 0.713 | 0.639 -> 0.699 | parity |
+| mean rollout / step (verl `timing_s/gen`) | 151.7 s | 106.1 s | -30.1% |
+| mean rollout / step (reqlog full-span) | 151.2 s | 105.8 s | -30.0% |
+| generate_sequences mean / replica | 81.7 s | 61.3 s | -25.0% |
+| generate_sequences slowest (straggler) | 147.4 s | 101.8 s | -30.9% |
+| straggler ratio (slowest / mean) | 1.80x | 1.66x | -7.8% |
+| full step time (`timing_s/step`, training-dominated) | 955.3 s | 910.1 s | -4.7% |
+| prompt_length mean (sanity: same data) | 12,890 | 12,890 | - |
+| response_length mean (non-clipping) | 628 | 619 | - |
+| val accuracy (step 0 -> 10) | 0.662 -> 0.782 | 0.681 -> 0.764 | parity |
 
 Notes: rollout generation is only a fraction of the training-dominated full step (update_actor alone
-is ~550 s/step), so the ~28% rollout-generation win nets ~4% on the full step. The prefix-cache hit
-rate and per-replica KV utilization (from the vLLM `/metrics` scrape) are not reported for this
-5-step pair; the scotus_xl workload (the legal analog of this task) documents them for the same
-routing mechanism (native re-prefills each document 8x and saturates KV; EPP co-locates the group and
-prefills once).
+is ~550 s/step), so the ~30% rollout-generation win nets ~5% on the full step. The prefix-cache hit
+rate and per-replica KV utilization (from the vLLM `/metrics` scrape) are not reported for this pair;
+the scotus_xl workload (the legal analog of this task) documents them for the same routing mechanism
+(native re-prefills each document 8x and saturates KV; EPP co-locates the group and prefills once).
 
 ## Reproduce
 

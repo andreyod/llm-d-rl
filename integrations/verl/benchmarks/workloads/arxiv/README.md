@@ -77,7 +77,7 @@ re-prefilled per group sample).
 ```bash
 # build the data once (no_ref config, CoT), then run each arm
 python3 benchmarks/workloads/arxiv/make_arxiv.py --local_dir /tmp/verl/data/arxiv
-benchmarks/scripts/run_test.sh --task arxiv --mode <native|epp> --steps 30
+benchmarks/scripts/run_test.sh --task arxiv --mode <native|epp> --steps 10
 ```
 
 The EPP arm needs `deploy/epp-config.yaml` with `windowDurationMs: 1000` + `balanceBy: tokens` and

@@ -13,7 +13,7 @@
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
 #   --task   any folder under workloads/ (gsm8k | hotpotqa | musique | quality |
-#            searchr1 | scotus_xl | geo3k)   (default: gsm8k)
+#            searchr1 | scotus_xl | arxiv | geo3k)   (default: gsm8k)
 #   --name   override experiment name      (default: auto-generated)
 #   --reqlog enable per-request JSONL log  (default: on for all modes)
 

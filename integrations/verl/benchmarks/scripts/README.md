@@ -47,7 +47,12 @@ For workloads with a script, run it once on the head pod before the first experi
 
 ```bash
 # replace <workload> and <script> with values from the table above
-kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/<workload>/<script>.py
+kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/<workload>/<script>.py  --local_dir /tmp/verl/data/<workload>
+```
+
+For example:
+```bash
+kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/scotus/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
 ```
 
 ## 2. Per-request JSONL logging (reqlog)

@@ -82,9 +82,6 @@ spec:
                   # Prepare data and prefetch the model.
                   mkdir -p /tmp/verl/hf_cache/datasets
 
-                  # Generate training data
-                  python3 /tmp/verl/verl/examples/data_preprocess/gsm8k.py --local_save_dir /tmp/verl/data/gsm8k
-
                   # Pre-fetch model weights (tokenizer/config only on head)
                   python3 -c "
                   from huggingface_hub import snapshot_download
@@ -284,7 +281,6 @@ spec:
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
                   python3 -c "import llm_d_rl_verl_integration" || { echo "FATAL: integration package not importable after install"; exit 1; }
                   mkdir -p /tmp/verl/hf_cache/datasets
-                  python3 /tmp/verl/verl/examples/data_preprocess/gsm8k.py --local_save_dir /tmp/verl/data/gsm8k
                   # Full model weights for FSDP training + vLLM rollout
                   python3 -c "
                   from huggingface_hub import snapshot_download

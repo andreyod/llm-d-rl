@@ -6,12 +6,15 @@ Envoy handles EPP routing internally; verl just does HTTP POST to Envoy.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import aiohttp
 
 from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import TokenOutput
+
+from llm_d_rl_verl_integration.reqlog import log_request, open_reqlog, phash
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,11 @@ class EnvoyLLMClient(LLMServerClient):
         )
         self._session: aiohttp.ClientSession | None = None
 
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._reqlog_f = open_reqlog()
+        self._turn_counts: dict[str, int] = {}
+
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
@@ -72,14 +80,36 @@ class EnvoyLLMClient(LLMServerClient):
             "sampling_params": {**sampling_params, "max_tokens": self._max_tokens},
         }
         session = await self._get_session()
+        t0 = time.monotonic()
         async with session.post(self._url, json=body) as resp:
             if not resp.ok:
                 raise RuntimeError(
                     f"Envoy returned HTTP {resp.status} for {self._url}"
                 )
             data = await resp.json()
+            endpoint = resp.headers.get("x-gateway-destination-endpoint")
 
-        return _parse_response(data)
+        t_end = time.monotonic()
+
+        out = _parse_response(data)
+        try:
+            ntok = len(out.token_ids) if getattr(out, "token_ids", None) is not None else None
+        except Exception:
+            ntok = None
+        rid = str(request_id)
+        turn = self._turn_counts.get(rid, 0)
+        self._turn_counts[rid] = turn + 1
+        log_request(self._reqlog_f, {
+            "ts": time.time(),
+            "request_id": rid,
+            "turn": turn,
+            "endpoint": endpoint,
+            "prompt_hash": phash(prompt_ids),
+            "prompt_tokens": len(prompt_ids),
+            "output_tokens": ntok,
+            "gen_s": round(t_end - t0, 5),
+        })
+        return out
 
 
 def _parse_response(data: dict) -> TokenOutput:

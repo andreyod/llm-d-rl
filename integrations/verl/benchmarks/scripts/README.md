@@ -31,28 +31,39 @@ data-prep scripts all land under `/tmp/benchmarks`:
 kubectl cp $REPO/benchmarks $NS/$H:/tmp/benchmarks
 ```
 
-### Data preparation (workloads with a `make_*.py` script)
+### Data preparation
 
 | Workload | Data prep script |
 |----------|-----------------|
-| `gsm8k` | — (built-in dataset) |
-| `geo3k` | — (built-in dataset) |
+| `gsm8k` | verl `examples/data_preprocess/gsm8k.py` |
+| `geo3k` | verl `examples/data_preprocess/geo3k.py` |
 | `hotpotqa` | `make_hotpotqa.py` |
 | `musique` | `make_musique.py` |
 | `quality` | `make_quality.py` |
 | `scotus_xl` | `make_scotus.py` |
 | `searchr1` | `make_searchr1.py` |
 
-For workloads with a script, run it once on the head pod before the first experiment:
+For `gsm8k` and `geo3k`, use verl's own preprocessing scripts.
 
 ```bash
-# replace <workload> and <script> with values from the table above
-kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/<workload>/<script>.py  --local_dir /tmp/verl/data/<workload>
+# gsm8k
+kubectl exec -n $NS $H -- python3 /tmp/verl/verl/examples/data_preprocess/gsm8k.py --local_save_dir /tmp/verl/data/gsm8k
+# geo3k
+kubectl exec -n $NS $H -- python3 /tmp/verl/verl/examples/data_preprocess/geo3k.py --local_save_dir /tmp/verl/data/geo3k
+```
+
+For workloads with a custom script (`hotpotqa`, `musique`, `quality`, `scotus_xl`, `searchr1`),
+run it once on the head pod before the first experiment. `--local_dir` is the destination
+directory for the processed data - it must match `DEF_TRAIN`/`DEF_TEST` in the workload's `task.env`:
+
+```bash
+# replace <workload>, <script>, and <dest_dir> with values from the table
+kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/<workload>/<script>.py --local_dir /tmp/verl/data/<dest_dir>
 ```
 
 For example:
 ```bash
-kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/scotus/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
+kubectl exec -n $NS $H -- python3 /tmp/benchmarks/workloads/scotus_xl/make_scotus.py --local_dir /tmp/verl/data/scotus_xl_cot
 ```
 
 ## 2. Per-request JSONL logging (reqlog)

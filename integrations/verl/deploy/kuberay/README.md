@@ -2,7 +2,7 @@
 
 A complete end-to-end example of running verl RL training with the llm-d integration on Kubernetes - single-node GRPO on GSM8K with Qwen3-4B. Includes a KubeRay cluster manifest with all necessary image references (verl, EPP, Envoy, sidecar), config files, and automated scripts for deployment, training, and benchmarking.
 
-The manifest has a **4-GPU** worker option active by default; an 8-GPU option is also provided (commented out). Pick the set of run commands below that matches the worker `resources` block you enabled.
+The manifest has an **8-GPU** worker option active by default; a 4-GPU option is also provided (commented out). Pick the set of run commands below that matches the worker `resources` block you enabled.
 
 ## Prerequisites
 
@@ -22,8 +22,8 @@ The manifest has a **4-GPU** worker option active by default; an 8-GPU option is
 
 The manifest template itself only needs edits for node/GPU layout:
 
-- **GPU count** - the worker `resources` block ships with the 4-GPU option active and the
-  8-GPU option commented out. Enable whichever matches your node.
+- **GPU count** - the worker `resources` block ships with the 8-GPU option active and the
+  4-GPU option commented out. Enable whichever matches your node.
 - **Node placement** - the head co-locates onto the worker's node via `podAffinity`, and the
   worker is anchored to a GPU node by its `nvidia.com/gpu` request. The worker `nodeAffinity`
   has a `NotIn` list excluding known-faulty GPU hosts (e.g. `<faulty-node-name>`) - edit that

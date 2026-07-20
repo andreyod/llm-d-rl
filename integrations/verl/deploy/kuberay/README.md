@@ -388,14 +388,14 @@ kubectl exec <worker-pod> -- tail -f /tmp/sidecar-decode-0.log
 
 #### Increasing verbosity
 
-All components default to quiet logging. Set these env vars to increase verbosity - either in the shell before launching training, or in the `env:` section of your KubeRay `RayCluster` / `RayJob` container spec.
+All components default to quiet logging. Set these env vars to increase verbosity in the `env:` section of your KubeRay `RayCluster` / `RayJob` container spec.
 
-| Env var | Component | Default | Debug value |
-|---------|-----------|---------|-------------|
-| `VERL_VLLM_LOG_LEVEL` | vLLM inside prefill and decode replicas (`VLLM_LOGGING_LEVEL`) | unset (vLLM default) | `DEBUG` |
-| `VERL_SIDECAR_LOG_LEVEL` | llm-d routing sidecar (`--zap-log-level`) | `0` | `5` |
-| `VERL_EPP_VERBOSITY` | EPP subprocess (`-v`) | `0` | `5` |
-| `VERL_ENVOY_LOG_LEVEL` | Envoy proxy (`--log-level`) | `info` | `debug` |
+| Env var | Component | Default | `info` | `debug` | `trace` |
+|---------|-----------|---------|--------|---------|---------|
+| `VERL_VLLM_LOG_LEVEL` | vLLM inside prefill and decode replicas (`VLLM_LOGGING_LEVEL`) | unset (vLLM default) | `INFO` | `DEBUG` | - |
+| `VERL_SIDECAR_LOG_LEVEL` | llm-d routing sidecar (`--zap-log-level`) | `1` | `1`-`3` | `4` | `5` |
+| `VERL_EPP_VERBOSITY` | EPP subprocess (`-v`) | `1` | `1`-`3` | `4` | `5` |
+| `VERL_ENVOY_LOG_LEVEL` | Envoy proxy (`--log-level`) | `info` | `info` | `debug` | `trace` |
 
 *Note: Ray actors are spawned as new processes on remote nodes and do not inherit the launching shell's environment.*
 

@@ -105,7 +105,7 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
     def _launch_sidecar(self) -> None:
         custom = self.config.get("custom") or {}
         connector = custom.get("sidecar_connector", "nixlv2")
-        sidecar_log_level = os.environ.get("VERL_SIDECAR_LOG_LEVEL", "0")
+        sidecar_log_level = os.environ.get("VERL_SIDECAR_LOG_LEVEL", "1")
         vllm_port = self._server_port
         self._sidecar_port = _find_free_port()
         cmd = [

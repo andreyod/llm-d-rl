@@ -1,5 +1,5 @@
 # Ported from verl/workers/rollout/vllm_rollout/llmd_pd_vllm_server.py
-# (router-plugin-abstruction branch).
+# (router-plugin-abstraction branch).
 # Only change: model_label_for_epp import points to our local epp.endpoints.
 from __future__ import annotations
 

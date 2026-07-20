@@ -36,6 +36,11 @@ static_resources:
                             idle_timeout: 86400s
                             upgrade_configs:
                               - upgrade_type: websocket
+                          response_headers_to_add:
+                            - header:
+                                key: x-gateway-destination-endpoint
+                                value: "%REQ(x-gateway-destination-endpoint)%"
+                              keep_empty_value: false
                           typed_per_filter_config:
                             envoy.filters.http.ext_proc:
                               "@type": type.googleapis.com/envoy.config.route.v3.FilterConfig

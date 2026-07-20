@@ -145,12 +145,21 @@ actor_rollout_ref.rollout.disaggregation.decode_replicas=<N> \
 
 ### Per-request JSONL logging (reqlog)
 
-The routing client writes a JSONL timing record per request when `VERL_REQLOG_DIR` is set:
-`$VERL_REQLOG_DIR/reqlog-<pid>.jsonl`, one file per worker process, line-buffered. Fields:
-`ts, request_id, endpoint, prompt_hash, prompt_tokens, output_tokens, pick_s, gen_s`.
-`prompt_hash` is a BLAKE2b-8 digest of the token IDs, so samples in the same GRPO group (same prompt)
-share a hash across replicas. It is a no-op when `VERL_REQLOG_DIR` is unset, so it is safe to leave
-on. (The baseline/native measurement client lives in `llm_d_rl_verl_integration.native_logging`.)
+All routing clients (`llmd_epp`, `llmd_serving`, `native_logging`) write a JSONL timing record per
+request when `VERL_REQLOG_DIR` is set: `$VERL_REQLOG_DIR/reqlog-<pid>.jsonl`, one file per worker
+process, line-buffered. It is a no-op when `VERL_REQLOG_DIR` is unset.
+
+| Field | Description | Modes |
+|-------|-------------|-------|
+| `ts` | Wall-clock timestamp (Unix seconds) | all |
+| `request_id` | verl request ID | all |
+| `turn` | 0-based turn index within a multi-turn trajectory | all |
+| `endpoint` | Backend pod that served the request (`host:port`) | all |
+| `prompt_hash` | BLAKE2b-8 hex digest of the input token IDs | all |
+| `prompt_tokens` | Number of input tokens | all |
+| `output_tokens` | Number of generated tokens | all |
+| `pick_s` | Time spent on the routing decision (EPP gRPC call or load-balancer acquire) | `llmd_epp`, `native_logging` |
+| `gen_s` | Generation time — actor call only for `llmd_epp`/`native_logging`; full round-trip (routing + inference) for `llmd_serving` | all |
 
 ### Debug logging
 

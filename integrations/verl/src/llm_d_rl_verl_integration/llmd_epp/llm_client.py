@@ -8,10 +8,7 @@ PD:     EPP picks decode endpoint + sidecar headers → call actor.generate.remo
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
 import time
 from typing import Any, Optional
 
@@ -20,15 +17,9 @@ import ray
 from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import TokenOutput
 
+from llm_d_rl_verl_integration.reqlog import log_request, open_reqlog, phash
+
 logger = logging.getLogger(__name__)
-
-
-def _phash(prompt_ids) -> str:
-    try:
-        b = b",".join(str(int(t)).encode() for t in prompt_ids)
-        return hashlib.blake2b(b, digest_size=8).hexdigest()
-    except Exception:
-        return ""
 
 
 class EPPLLMClient(LLMServerClient):
@@ -70,31 +61,10 @@ class EPPLLMClient(LLMServerClient):
         self.__dict__.update(state)
         from llm_d_rl_verl_integration.llmd_epp.grpc_client import EPPGrpcClient
         self._epp_client = EPPGrpcClient(self._grpc_addr)
-        self._reqlog_f = self._open_reqlog()
+        self._reqlog_f = open_reqlog()
         # Per-trajectory turn counter keyed by the (stable) incoming request_id;
         # see NativeLogging twin. 0-based turn index per trajectory (0 for single-turn).
         self._turn_counts: dict[str, int] = {}
-
-    @staticmethod
-    def _open_reqlog():
-        """Open the per-process JSONL log file if VERL_REQLOG_DIR is set."""
-        d = os.environ.get("VERL_REQLOG_DIR")
-        if not d:
-            return None
-        try:
-            os.makedirs(d, exist_ok=True)
-            return open(os.path.join(d, f"reqlog-{os.getpid()}.jsonl"), "a", buffering=1)
-        except Exception:
-            return None
-
-    def _log_request(self, rec: dict) -> None:
-        """Write a record to the per-process JSONL log. No-op if logging is disabled."""
-        if self._reqlog_f is None:
-            return
-        try:
-            self._reqlog_f.write(json.dumps(rec) + "\n")
-        except Exception:
-            pass
 
     async def generate(
         self,
@@ -141,12 +111,12 @@ class EPPLLMClient(LLMServerClient):
         rid = str(request_id)
         turn = self._turn_counts.get(rid, 0)
         self._turn_counts[rid] = turn + 1
-        self._log_request({
+        log_request(self._reqlog_f, {
             "ts": time.time(),
             "request_id": rid,
             "turn": turn,
             "endpoint": endpoint,
-            "prompt_hash": _phash(prompt_ids),
+            "prompt_hash": phash(prompt_ids),
             "prompt_tokens": len(prompt_ids),
             "output_tokens": ntok,
             "pick_s": round(t_pick - t0, 5),

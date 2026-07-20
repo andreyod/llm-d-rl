@@ -5,8 +5,9 @@ set of RL workloads.
 
 - [`scripts/`](scripts/) - the run harness: `run_test.sh` (thin driver, sources a workload's
   `task.env`), `run_on_head.sh` (laptop launcher), the instrumentation (`rl_orchestrate.sh`,
-  `vllm_scrape.py`), and `utils/push-epp.sh`. See [`scripts/README.md`](scripts/README.md) for the
-  instrumentation runbook.
+  `vllm_scrape.py`), and `utils/push-epp.sh`. **Start here to run benchmarks** — see
+  [`scripts/README.md`](scripts/README.md) for the full instrumentation runbook.
+  
 - [`workloads/`](workloads/) - one self-contained folder per workload (`task.env`, data builder,
   and for Search-R1 its tool config + retriever service). Run one with
   `scripts/run_test.sh --task <name>`.

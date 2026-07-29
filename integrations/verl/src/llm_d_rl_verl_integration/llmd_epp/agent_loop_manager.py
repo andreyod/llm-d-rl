@@ -12,6 +12,12 @@ To use, set in the training YAML config:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
           epp_grpc_port: 9002      # optional, default 9002
+          epp_report_completion: true  # optional, default false - keep the ext_proc
+                                        # stream open through generation and report
+                                        # completion, so EPP's in-flight counter is
+                                        # honest (needed for active-request-scorer /
+                                        # a concurrency cap; adds one held-open stream
+                                        # + 2 extra ext_proc messages per request)
 
   PD disaggregated (llm-d vllm):
     actor_rollout_ref:
@@ -110,6 +116,7 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
         logger.info("[LlmdRouterAgentLoopManager] EPP ready at %s", self._grpc_addr)
 
     def _create_llm_client(self) -> LLMServerClient:
+        custom = OmegaConf.to_container(self.rollout_config.get("custom") or {}, resolve=True)
         return EPPLLMClient(
             config=self.config,
             load_balancer_handle=self.llm_client._load_balancer,
@@ -117,6 +124,7 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
             address_to_handle=self._address_to_handle,
             model_name=self._model_name,
             pd_mode=self._pd_mode,
+            report_completion=bool(custom.get("epp_report_completion", False)),
         )
 
 

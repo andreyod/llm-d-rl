@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# run_test.sh  --mode <native|epp|llm-d>  [options]
+# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|llm-d>  [options]
 #
 # Usage examples:
 #   bash run_test.sh --mode native
 #   bash run_test.sh --mode epp
 #   bash run_test.sh --mode epp --steps 20 --tp 2 --n 4
+#   bash run_test.sh --mode epp-fc --task weka   # EPP routing + per-endpoint concurrency CAP (flow-control queue)
 #   bash run_test.sh --mode llm-d          # (not yet implemented)
 #
 # Options:
-#   --mode   native | epp | llm-d          (required)
+#   --mode   native | epp | epp-inflight | epp-fc | llm-d (required)
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
@@ -43,12 +44,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  echo "ERROR: --mode is required  (native | epp | llm-d)"
+  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | llm-d)"
   exit 1
 fi
 
 # -- per-mode config -----------------------------------------------------------
-EXTRA_HYDRA=""
+# Each branch only sets which agent-loop manager class to use, (for EPP modes)
+# which EPP config file to mount, and (for the completion-reporting modes)
+# whether to enable epp_report_completion; the actual hydra overrides are
+# assembled once, identically, right after the case statement.
+AGENT_LOOP_MANAGER_CLASS=""
+EPP_CONFIG_FILE=""
+EPP_REPORT_COMPLETION=""
 
 case "$MODE" in
   native)
@@ -57,18 +64,44 @@ case "$MODE" in
     # Native verl routing (GlobalRequestLoadBalancer), but with a logging client so
     # the run produces the same per-request reqlog as EPP, plus the endpoints YAML
     # for the vLLM /metrics scraper. Routing behaviour is unchanged from stock native.
-    EXTRA_HYDRA="
-  +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.native_logging.agent_loop_manager.NativeLoggingAgentLoopManager \
-  +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.native_logging.agent_loop_manager.NativeLoggingAgentLoopManager"
     ;;
 
   epp)
     DEFAULT_NAME="qwen3_4b_grpo_epp_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
-    EXTRA_HYDRA="
-  +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager \
-  +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
-  +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
+    EPP_CONFIG_FILE="epp-config.yaml"
+    ;;
+
+  epp-inflight)
+    # EPP routing on the in-flight counter, NO cap (routing only).
+    # epp_report_completion=true keeps the ext_proc stream open through
+    # generation and reports completion, so EPP's inflight-load-producer is
+    # honest and active-request-scorer routes to the least-in-flight endpoint.
+    # Config epp-config-inflight.yaml (inflight-load-producer + active-request-scorer,
+    # no flowControl / no concurrency-detector). Intended for --task weka.
+    DEFAULT_NAME="qwen3_4b_grpo_eppinflight_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
+    EPP_CONFIG_FILE="epp-config-inflight.yaml"
+    EPP_REPORT_COMPLETION="true"
+    ;;
+
+  epp-fc)
+    # EPP routing + a per-endpoint concurrency CAP enforced by EPP's flow-control
+    # layer (over-cap requests queued via EnqueueAndWait). "fc" = flow control =
+    # the cap+queue. Builds on epp-inflight's honest in-flight counter
+    # (epp_report_completion=true). The flow-control layer is enabled the
+    # NON-deprecated way: featureGates: [flowControl] inside the config (NOT the
+    # deprecated env var). The cap config is overridable via EPP_CAP_CONFIG
+    # (default epp-config-inflight-cap.yaml) to sweep the cap C without editing
+    # the mode.
+    DEFAULT_NAME="qwen3_4b_grpo_eppfc_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
+    EPP_CONFIG_FILE="${EPP_CAP_CONFIG:-epp-config-inflight-cap.yaml}"
+    EPP_REPORT_COMPLETION="true"
     ;;
 
   llm-d)
@@ -77,10 +110,26 @@ case "$MODE" in
     ;;
 
   *)
-    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | llm-d"
+    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | llm-d"
     exit 1
     ;;
 esac
+
+# Hydra overrides common to every routing mode above: the agent-loop manager class
+# and endpoints file are always set; epp_config_file is added only when the mode
+# set one (native has none).
+EXTRA_HYDRA="
+  +actor_rollout_ref.rollout.agent.agent_loop_manager_class=${AGENT_LOOP_MANAGER_CLASS}"
+if [[ -n "$EPP_CONFIG_FILE" ]]; then
+  EXTRA_HYDRA="${EXTRA_HYDRA} \
+  +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/${EPP_CONFIG_FILE}"
+fi
+if [[ -n "$EPP_REPORT_COMPLETION" ]]; then
+  EXTRA_HYDRA="${EXTRA_HYDRA} \
+  +actor_rollout_ref.rollout.custom.epp_report_completion=${EPP_REPORT_COMPLETION}"
+fi
+EXTRA_HYDRA="${EXTRA_HYDRA} \
+  +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml"
 
 EXPERIMENT_NAME="${CUSTOM_NAME:-$DEFAULT_NAME}"
 
@@ -128,7 +177,11 @@ read -r -a EXTRA_OV <<< "${EXTRA_OVERRIDES:-}"
 # -- launch --------------------------------------------------------------------
 cd /tmp/verl/verl/examples/grpo_trainer
 
-ROLLOUT_N=$N ROLLOUT_TP=$TP NGPUS_PER_NODE=8 TRAIN_BATCH_SIZE=256 PPO_MINI_BATCH_SIZE=128 \
+# TRAIN_BATCH_SIZE / PPO_MINI_BATCH_SIZE are env-overridable: workloads with fewer
+# prompts than the default batch (e.g. weka replays N<256 conversations) must set
+# them to the conversation count, or the dataloader cannot fill a step.
+ROLLOUT_N=$N ROLLOUT_TP=$TP NGPUS_PER_NODE=8 \
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-256} PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-128} \
 MODEL_PATH=${MODEL_PATH:-$DEF_MODEL} \
 TRAIN_FILE=$TRAIN_RESOLVED \
 TEST_FILE=$TEST_RESOLVED \

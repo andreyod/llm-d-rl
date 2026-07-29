@@ -7,6 +7,7 @@ Hand-rolled protobuf — no generated stubs needed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -58,6 +59,18 @@ def _encode_request_headers(headers: list[tuple[str, bytes]]) -> bytes:
 def _encode_request_body(body: bytes) -> bytes:
     http_body = _lv(1, body) + _bool_field(2, True)
     return _lv(4, http_body)
+
+
+def _encode_response_headers(headers: list[tuple[str, bytes]], end_of_stream: bool = False) -> bytes:
+    """ProcessingRequest.response_headers (field 3), an HttpHeaders message."""
+    http_headers = _lv(1, _encode_header_map(headers)) + _bool_field(3, end_of_stream)
+    return _lv(3, http_headers)
+
+
+def _encode_response_body(body: bytes, end_of_stream: bool) -> bytes:
+    """ProcessingRequest.response_body (field 5), an HttpBody message."""
+    http_body = _lv(1, body) + _bool_field(2, end_of_stream)
+    return _lv(5, http_body)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +129,19 @@ def _extract_headers(response_bytes: bytes) -> dict[str, str]:
 # EPP gRPC client
 # ---------------------------------------------------------------------------
 
+class _RequestStream:
+    """A single open ext_proc Process stream for one request, kept open past the
+    routing decision so a response phase can be sent later via ``complete()``."""
+
+    __slots__ = ("call", "send_q", "endpoint", "sidecar")
+
+    def __init__(self, call, send_q: "asyncio.Queue", endpoint: Optional[str], sidecar: dict[str, str]):
+        self.call = call
+        self.send_q = send_q
+        self.endpoint = endpoint
+        self.sidecar = sidecar
+
+
 class EPPGrpcClient:
     """Thin gRPC client for EPP's ext-proc endpoint.
 
@@ -160,6 +186,80 @@ class EPPGrpcClient:
                 return endpoint, sidecar_headers
 
         return None, {}
+
+    async def begin(self, model: str, prompt_ids: list[int], request_id: str) -> _RequestStream:
+        """Like ``pick()``, but leaves the stream's send side open after the
+        routing decision so ``complete()`` can later report the response phase.
+
+        Use this (with ``complete()``) instead of ``pick()`` when EPP's in-flight
+        counter needs to reflect the real generation window (e.g. an
+        active-request-scorer or a per-endpoint concurrency cap) rather than the
+        pick-time snapshot ``pick()`` produces.
+        """
+        body = json.dumps({"model": model, "token_ids": prompt_ids}).encode()
+        req_headers = _encode_request_headers([
+            (":method", b"POST"),
+            (":path", b"/inference/v1/generate"),
+            ("content-type", b"application/json"),
+            ("content-length", str(len(body)).encode()),
+            # Stable key EPP uses to correlate the completion signal (PluginState).
+            ("x-request-id", request_id.encode()),
+        ])
+        req_body = _encode_request_body(body)
+
+        send_q: asyncio.Queue = asyncio.Queue()
+
+        async def _req_iter():
+            while True:
+                item = await send_q.get()
+                if item is None:  # sentinel -> half-close the send side
+                    return
+                yield item
+
+        call = self._method(_req_iter())
+        await send_q.put(req_headers)
+        await send_q.put(req_body)
+
+        # Read responses until we see the routing decision, then STOP (leave the
+        # stream open). Use call.read() so we can resume reading in complete().
+        endpoint: Optional[str] = None
+        sidecar: dict[str, str] = {}
+        while True:
+            msg = await call.read()
+            if msg is grpc.aio.EOF:
+                break
+            headers = _extract_headers(msg)
+            ep = headers.get(DESTINATION_HEADER)
+            if ep:
+                endpoint = ep
+                sidecar = {k: v for k, v in headers.items() if k != DESTINATION_HEADER}
+                break
+        return _RequestStream(call, send_q, endpoint, sidecar)
+
+    async def complete(self, stream: _RequestStream, output_tokens: int = 0) -> None:
+        """Send the response phase so EPP fires ResponseBodyProcessor -> decrement.
+
+        Best-effort: any error here (or a dropped stream) still triggers EPP's
+        completion defer on the server side, so the in-flight count is released.
+        """
+        try:
+            usage = json.dumps({"usage": {"completion_tokens": int(output_tokens)}}).encode()
+            await stream.send_q.put(_encode_response_headers([
+                (":status", b"200"),
+                ("content-type", b"application/json"),
+            ]))
+            await stream.send_q.put(_encode_response_body(usage, True))  # EndOfStream
+            await stream.send_q.put(None)  # half-close send side -> server sees end
+            # Drain remaining server messages so the RPC finishes cleanly.
+            while True:
+                msg = await stream.call.read()
+                if msg is grpc.aio.EOF:
+                    break
+        except Exception:  # noqa: BLE001 - completion is best-effort; janitor backstops
+            try:
+                stream.call.cancel()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def close(self) -> None:
         await self._channel.close()

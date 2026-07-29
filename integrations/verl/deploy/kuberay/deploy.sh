@@ -45,13 +45,17 @@ render_retriever() {
 }
 
 create_configmap() {
-  # epp-config.yaml / epp-config-pd.yaml / envoy.yaml are the source of truth;
-  # build the ConfigMap from them (idempotent apply) into the configured
-  # namespace. envoy.yaml is consumed by the llm-d stack (Envoy) integration.
+  # epp-config.yaml / epp-config-pd.yaml / envoy.yaml / epp-config-inflight.yaml /
+  # epp-config-inflight-cap.yaml are the source of truth; build the ConfigMap
+  # from them (idempotent apply) into the configured namespace. envoy.yaml is
+  # consumed by the llm-d stack (Envoy) integration. epp-config-inflight*.yaml
+  # are the configs for --mode epp-inflight / epp-fc (custom.epp_report_completion).
   kubectl create configmap llmd-epp-configs \
     --from-file=epp-config.yaml=../epp-config.yaml \
     --from-file=envoy.yaml=../envoy.yaml \
     --from-file=searchr1_tool_config.yaml=../../benchmarks/workloads/searchr1/tool_config.yaml \
+    --from-file=epp-config-inflight.yaml=../epp-config-inflight.yaml \
+    --from-file=epp-config-inflight-cap.yaml=../epp-config-inflight-cap.yaml \
     --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -
 }

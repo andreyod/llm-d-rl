@@ -37,6 +37,15 @@ class EPPLLMClient(LLMServerClient):
         model_name: model identifier sent in the EPP request body.
         pd_mode: if True, forward sidecar_headers returned by EPP to
             actor.generate.remote() so PDDecodeVLLMHttpServer can reach the sidecar.
+        report_completion: if True, keep the ext_proc stream open through
+            generation and report the response phase back to EPP on completion
+            (``EPPGrpcClient.begin()``/``complete()``), so EPP's in-flight
+            counter reflects the real generation window instead of the pick-time
+            snapshot. Needed for an active-request-scorer or a per-endpoint
+            concurrency cap (flow control) to bind on anything meaningful;
+            adds one held-open stream per in-flight request plus two extra
+            ext_proc messages per request, so leave it off unless the EPP config
+            actually consumes the in-flight signal.
     """
 
     def __init__(
@@ -48,6 +57,7 @@ class EPPLLMClient(LLMServerClient):
         address_to_handle: dict[str, ray.actor.ActorHandle],
         model_name: str,
         pd_mode: bool = False,
+        report_completion: bool = False,
         **kwargs,
     ):
         super().__init__(config=config, load_balancer_handle=load_balancer_handle, **kwargs)
@@ -55,6 +65,7 @@ class EPPLLMClient(LLMServerClient):
         self._address_to_handle = address_to_handle
         self._model_name = model_name
         self._pd_mode = pd_mode
+        self._report_completion = report_completion
         self._epp_client = None  # created on workers after unpickling via __setstate__
 
     def __setstate__(self, state):
@@ -77,14 +88,31 @@ class EPPLLMClient(LLMServerClient):
         **kwargs,
     ) -> TokenOutput:
         t0 = time.monotonic()
-        endpoint, sidecar_headers = await self._epp_client.pick(self._model_name, prompt_ids)
+
+        # Two ways to get the routing decision: pick() is fire-and-forget (stream
+        # closes right after routing, so EPP's in-flight signal reads ~0 a few ms
+        # later); begin() keeps the stream open so complete() can report the real
+        # response phase once generation finishes. stream is None in pick mode,
+        # which makes _complete() below a no-op.
+        stream = None
+        if self._report_completion:
+            stream = await self._epp_client.begin(self._model_name, prompt_ids, str(request_id))
+            endpoint, sidecar_headers = stream.endpoint, stream.sidecar
+        else:
+            endpoint, sidecar_headers = await self._epp_client.pick(self._model_name, prompt_ids)
         t_pick = time.monotonic()
 
+        async def _complete(ntok: int) -> None:
+            if stream is not None:
+                await self._epp_client.complete(stream, ntok)
+
         if endpoint is None:
+            await _complete(0)
             raise RuntimeError(f"EPP returned no endpoint for request {request_id}")
 
         actor = self._address_to_handle.get(endpoint)
         if actor is None:
+            await _complete(0)
             raise RuntimeError(
                 f"EPP returned endpoint {endpoint!r} which is not in the known server map. "
                 f"Known: {list(self._address_to_handle.keys())}"
@@ -94,32 +122,35 @@ class EPPLLMClient(LLMServerClient):
         if self._pd_mode and sidecar_headers:
             extra_kwargs["sidecar_headers"] = sidecar_headers
 
-        out = await actor.generate.remote(
-            prompt_ids=prompt_ids,
-            sampling_params=sampling_params,
-            request_id=request_id,
-            image_data=image_data,
-            video_data=video_data,
-            **extra_kwargs,
-        )
-        t_end = time.monotonic()
-
+        out = None
         try:
-            ntok = len(out.token_ids) if getattr(out, "token_ids", None) is not None else None
-        except Exception:
-            ntok = None
-        rid = str(request_id)
-        turn = self._turn_counts.get(rid, 0)
-        self._turn_counts[rid] = turn + 1
-        log_request(self._reqlog_f, {
-            "ts": time.time(),
-            "request_id": rid,
-            "turn": turn,
-            "endpoint": endpoint,
-            "prompt_hash": phash(prompt_ids),
-            "prompt_tokens": len(prompt_ids),
-            "output_tokens": ntok,
-            "pick_s": round(t_pick - t0, 5),
-            "gen_s": round(t_end - t_pick, 5),
-        })
-        return out
+            out = await actor.generate.remote(
+                prompt_ids=prompt_ids,
+                sampling_params=sampling_params,
+                request_id=request_id,
+                image_data=image_data,
+                video_data=video_data,
+                **extra_kwargs,
+            )
+            return out
+        finally:
+            t_end = time.monotonic()
+            try:
+                ntok = len(out.token_ids) if out is not None and getattr(out, "token_ids", None) is not None else 0
+            except Exception:  # noqa: BLE001
+                ntok = 0
+            await _complete(ntok)
+            rid = str(request_id)
+            turn = self._turn_counts.get(rid, 0)
+            self._turn_counts[rid] = turn + 1
+            log_request(self._reqlog_f, {
+                "ts": time.time(),
+                "request_id": rid,
+                "turn": turn,
+                "endpoint": endpoint,
+                "prompt_hash": phash(prompt_ids),
+                "prompt_tokens": len(prompt_ids),
+                "output_tokens": ntok,
+                "pick_s": round(t_pick - t0, 5),
+                "gen_s": round(t_end - t_pick, 5),
+            })

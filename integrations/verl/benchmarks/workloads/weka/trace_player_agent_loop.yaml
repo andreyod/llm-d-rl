@@ -1,0 +1,7 @@
+# Custom agent-loop registration for the trace player.
+# Referenced by task.env via actor_rollout_ref.rollout.agent.agent_loop_config_path
+# (verl loads this at AgentLoopWorker init and registers each entry by .name, so
+# registration is guaranteed under every routing mode: native / epp / epp-fc).
+# Mount this alongside the EPP configs at /etc/llmd-configs/ (see README).
+- name: trace_player
+  _target_: llm_d_rl_verl_integration.trace_player.agent_loop.TracePlayerAgentLoop

@@ -1,6 +1,7 @@
-# EPP config: per-endpoint concurrency cap example variant (see
-# deploy/epp-config-inflight-cap.yaml for the base + explanation). Select via
-# EPP_CAP_CONFIG=epp-config-inflight-cN.yaml with run_test.sh --mode epp-fc.
+# EPP config: per-endpoint concurrency cap example (see
+# deploy/epp-config-inflight-cap.yaml for the base + explanation). Copy and
+# adjust maxConcurrency, then point EPP_CAP_CONFIG at your copy with
+# run_test.sh --mode epp-fc.
 #
 # maxConcurrency is the per-endpoint cap C. Fed by the same inflight-load-producer
 # whose in-flight count is kept honest by
@@ -41,7 +42,7 @@ plugins:
   - name: concurrency-detector
     type: concurrency-detector
     parameters:
-      maxConcurrency: 32          # per-endpoint cap C - example value for this file; see EPP_CAP_CONFIG above to select others.
+      maxConcurrency: 16          # per-endpoint cap C - adjust for your own run.
       headroom: 0
       concurrencyMode: requests
       inFlightLoadProducerName: inflight-load-producer

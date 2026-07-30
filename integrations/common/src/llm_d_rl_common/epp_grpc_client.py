@@ -142,6 +142,26 @@ class _RequestStream:
         self.sidecar = sidecar
 
 
+class RoutingResult:
+    """Outcome of routing a request through EPP via ``EPPGrpcClient.route()``.
+
+    ``complete()`` is unconditionally safe to call once generation finishes: it
+    is a no-op when the request was routed without completion tracking, so
+    callers never need to know whether ``pick()`` or ``begin()``/``complete()``
+    was used underneath.
+    """
+
+    __slots__ = ("endpoint", "sidecar_headers", "_complete_fn")
+
+    def __init__(self, endpoint: Optional[str], sidecar_headers: dict[str, str], complete_fn) -> None:
+        self.endpoint = endpoint
+        self.sidecar_headers = sidecar_headers
+        self._complete_fn = complete_fn
+
+    async def complete(self, output_tokens: int = 0) -> None:
+        await self._complete_fn(output_tokens)
+
+
 class EPPGrpcClient:
     """Thin gRPC client for EPP's ext-proc endpoint.
 
@@ -157,6 +177,37 @@ class EPPGrpcClient:
             request_serializer=lambda x: x,
             response_deserializer=lambda x: x,
         )
+
+    async def route(
+        self,
+        model: str,
+        prompt_ids: list[int],
+        request_id: str,
+        *,
+        track_completion: bool = False,
+    ) -> RoutingResult:
+        """Route a request through EPP and return the decision plus a completion hook.
+
+        Chooses between the fire-and-forget (``pick()``) and tracked-completion
+        (``begin()``/``complete()``) gRPC patterns based on ``track_completion``,
+        so callers never need to know either protocol exists. Call
+        ``result.complete(ntok)`` unconditionally when generation finishes; it
+        does the real report to EPP in tracked mode and nothing otherwise.
+        """
+        if track_completion:
+            stream = await self.begin(model, prompt_ids, request_id)
+
+            async def _complete(output_tokens: int = 0) -> None:
+                await self.complete(stream, output_tokens)
+
+            return RoutingResult(stream.endpoint, stream.sidecar, _complete)
+
+        endpoint, sidecar_headers = await self.pick(model, prompt_ids)
+
+        async def _noop(output_tokens: int = 0) -> None:
+            return None
+
+        return RoutingResult(endpoint, sidecar_headers, _noop)
 
     async def pick(self, model: str, prompt_ids: list[int]) -> tuple[Optional[str], dict[str, str]]:
         """Ask EPP which endpoint to route this request to.

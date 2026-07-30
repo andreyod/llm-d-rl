@@ -39,11 +39,14 @@ nodes:
 pip install "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
 ```
 
+This pulls in `llm-d-rl-common` (the framework-agnostic EPP client and utilities in
+[`integrations/common`](../../common/README.md)) automatically via its declared dependency.
+
 Or add the source to `PYTHONPATH` without installing:
 
 ```bash
 git clone https://github.com/llm-d-incubation/llm-d-rl.git
-export PYTHONPATH=$(pwd)/llm-d-rl/integrations/verl/src:$PYTHONPATH
+export PYTHONPATH=$(pwd)/llm-d-rl/integrations/verl/src:$(pwd)/llm-d-rl/integrations/common/src:$PYTHONPATH
 ```
 
 ### 3. Get the EPP, Envoy, and sidecar binaries

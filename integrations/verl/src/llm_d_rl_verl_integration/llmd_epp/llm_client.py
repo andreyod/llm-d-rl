@@ -17,7 +17,7 @@ import ray
 from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import TokenOutput
 
-from llm_d_rl_verl_integration.reqlog import log_request, open_reqlog, phash
+from llm_d_rl_common.reqlog import log_request, open_reqlog, phash
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,10 @@ class EPPLLMClient(LLMServerClient):
         model_name: model identifier sent in the EPP request body.
         pd_mode: if True, forward sidecar_headers returned by EPP to
             actor.generate.remote() so PDDecodeVLLMHttpServer can reach the sidecar.
-        report_completion: if True, keep the ext_proc stream open through
-            generation and report the response phase back to EPP on completion
-            (``EPPGrpcClient.begin()``/``complete()``), so EPP's in-flight
-            counter reflects the real generation window instead of the pick-time
-            snapshot. Needed for an active-request-scorer or a per-endpoint
+        report_completion: passed to ``EPPGrpcClient.route()`` as
+            ``track_completion``. If True, EPP's in-flight counter reflects the
+            real generation window instead of the pick-time snapshot. Needed for
+            an active-request-scorer or a per-endpoint
             concurrency cap (flow control) to bind on anything meaningful;
             adds one held-open stream per in-flight request plus two extra
             ext_proc messages per request, so leave it off unless the EPP config
@@ -70,7 +69,7 @@ class EPPLLMClient(LLMServerClient):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        from llm_d_rl_verl_integration.llmd_epp.grpc_client import EPPGrpcClient
+        from llm_d_rl_common.epp_grpc_client import EPPGrpcClient
         self._epp_client = EPPGrpcClient(self._grpc_addr)
         self._reqlog_f = open_reqlog()
         # Per-trajectory turn counter keyed by the (stable) incoming request_id;
@@ -89,30 +88,20 @@ class EPPLLMClient(LLMServerClient):
     ) -> TokenOutput:
         t0 = time.monotonic()
 
-        # Two ways to get the routing decision: pick() is fire-and-forget (stream
-        # closes right after routing, so EPP's in-flight signal reads ~0 a few ms
-        # later); begin() keeps the stream open so complete() can report the real
-        # response phase once generation finishes. stream is None in pick mode,
-        # which makes _complete() below a no-op.
-        stream = None
-        if self._report_completion:
-            stream = await self._epp_client.begin(self._model_name, prompt_ids, str(request_id))
-            endpoint, sidecar_headers = stream.endpoint, stream.sidecar
-        else:
-            endpoint, sidecar_headers = await self._epp_client.pick(self._model_name, prompt_ids)
+        result = await self._epp_client.route(
+            self._model_name, prompt_ids, str(request_id),
+            track_completion=self._report_completion,
+        )
+        endpoint, sidecar_headers = result.endpoint, result.sidecar_headers
         t_pick = time.monotonic()
 
-        async def _complete(ntok: int) -> None:
-            if stream is not None:
-                await self._epp_client.complete(stream, ntok)
-
         if endpoint is None:
-            await _complete(0)
+            await result.complete(0)
             raise RuntimeError(f"EPP returned no endpoint for request {request_id}")
 
         actor = self._address_to_handle.get(endpoint)
         if actor is None:
-            await _complete(0)
+            await result.complete(0)
             raise RuntimeError(
                 f"EPP returned endpoint {endpoint!r} which is not in the known server map. "
                 f"Known: {list(self._address_to_handle.keys())}"
@@ -139,7 +128,7 @@ class EPPLLMClient(LLMServerClient):
                 ntok = len(out.token_ids) if out is not None and getattr(out, "token_ids", None) is not None else 0
             except Exception:  # noqa: BLE001
                 ntok = 0
-            await _complete(ntok)
+            await result.complete(ntok)
             rid = str(request_id)
             turn = self._turn_counts.get(rid, 0)
             self._turn_counts[rid] = turn + 1

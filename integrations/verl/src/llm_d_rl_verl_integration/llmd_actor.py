@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import ray
 
-from llm_d_rl_verl_integration.endpoints import write_pd_endpoints, write_rollout_endpoints
+from llm_d_rl_common.endpoints import write_pd_endpoints, write_rollout_endpoints
 
 logger = logging.getLogger(__name__)
 

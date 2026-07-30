@@ -24,7 +24,7 @@ import logging
 from omegaconf import OmegaConf
 
 from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopManager
-from llm_d_rl_verl_integration.endpoints import write_rollout_endpoints
+from llm_d_rl_common.endpoints import write_rollout_endpoints
 from llm_d_rl_verl_integration.native_logging.llm_client import LoggingLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
 

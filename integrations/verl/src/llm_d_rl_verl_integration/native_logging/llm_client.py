@@ -18,7 +18,7 @@ from uuid import uuid4
 from verl.workers.rollout.llm_server import LLMServerClient
 from verl.workers.rollout.replica import TokenOutput
 
-from llm_d_rl_verl_integration.reqlog import log_request, open_reqlog, phash
+from llm_d_rl_common.reqlog import log_request, open_reqlog, phash
 
 logger = logging.getLogger(__name__)
 

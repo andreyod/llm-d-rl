@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-d-rl-common"
+version = "0.1.0"
+description = "Framework-agnostic EPP client and routing utilities shared across llm-d-rl integrations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_d_rl_common*"]

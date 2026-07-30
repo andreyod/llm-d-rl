@@ -16,7 +16,7 @@ from verl.workers.rollout.replica import TokenOutput
 from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer, vLLMReplica
 from verl.workers.rollout.vllm_rollout.vllm_rollout import ServerAdapter
 
-from llm_d_rl_verl_integration.endpoints import model_label as model_label_for_epp
+from llm_d_rl_common.endpoints import model_label as model_label_for_epp
 
 logger = logging.getLogger(__name__)
 

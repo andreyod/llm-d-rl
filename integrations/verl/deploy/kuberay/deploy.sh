@@ -56,6 +56,7 @@ create_configmap() {
     --from-file=searchr1_tool_config.yaml=../../benchmarks/workloads/searchr1/tool_config.yaml \
     --from-file=epp-config-inflight.yaml=../epp-config-inflight.yaml \
     --from-file=epp-config-inflight-cap.yaml=../epp-config-inflight-cap.yaml \
+    --from-file=trace_player_agent_loop.yaml=../../benchmarks/workloads/weka/trace_player_agent_loop.yaml \
     --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -
 }

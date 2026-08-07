@@ -135,7 +135,21 @@ esac
 # Hydra overrides common to every routing mode above: the agent-loop manager class
 # and endpoints file are always set; epp_config_file is added only when the mode
 # set one (native has none).
+#
+# trainer.use_v1=true is mandatory here: verl's own default (false) routes through
+# the legacy main_ppo_v0.TaskRunner/RayPPOTrainer, whose _validate() unconditionally
+# constructs and passes a DataProto to async_rollout_manager.generate_sequences().
+# Every llm-d mode's manager class chain (LlmdBaseAgentLoopManager) subclasses verl's
+# AgentLoopManagerTQ (see base_agent_loop_manager.py), whose generate_sequences expects
+# a TensorDict and returns None (real outputs go through TransferQueue) - calling it
+# with a DataProto crashes inside AgentLoopWorkerTQ.generate_sequences with
+# `AttributeError: 'NoneType' object has no attribute 'keys'` (DataProto.pop() called
+# with the wrong signature). TaskRunnerV1 (use_v1=true) is the pipeline actually
+# designed for AgentLoopManagerTQ end-to-end, including validation - not just an
+# unrelated flag; no key prefixed with `+` since trainer.use_v1 already exists in
+# verl's schema.
 EXTRA_HYDRA="
+  trainer.use_v1=true \
   +actor_rollout_ref.rollout.agent.agent_loop_manager_class=${AGENT_LOOP_MANAGER_CLASS}"
 if [[ -n "$EPP_CONFIG_FILE" ]]; then
   EXTRA_HYDRA="${EXTRA_HYDRA} \

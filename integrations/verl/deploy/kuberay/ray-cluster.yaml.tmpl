@@ -70,6 +70,20 @@ spec:
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
+                  # vLLM renamed FusedMoE to FusedMoEFactory; verl's vllm_fp8_utils.py imports
+                  # the old name unconditionally. Patch in a fallback right after checkout, since
+                  # verl is third-party and cloned fresh every pod start - this can't live in any
+                  # image. Warns (doesn't fail) if the pattern is gone, so a future verl commit
+                  # bump doesn't silently break postStart.
+                  python3 - <<'PYEOF'
+                  path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
+                  content = open(path).read()
+                  old = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
+                  new = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\nexcept ImportError:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE\ntry:\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
+                  found = old in content
+                  open(path, "w").write(content.replace(old, new)) if found else None
+                  print("patched vllm_fp8_utils.py (FusedMoE fallback)" if found else "WARNING: FusedMoE patch pattern not found in vllm_fp8_utils.py - check manually")
+                  PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
                   # Install the common package first (verl package depends on it), then the
@@ -275,6 +289,20 @@ spec:
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
+                  # vLLM renamed FusedMoE to FusedMoEFactory; verl's vllm_fp8_utils.py imports
+                  # the old name unconditionally. Patch in a fallback right after checkout, since
+                  # verl is third-party and cloned fresh every pod start - this can't live in any
+                  # image. Warns (doesn't fail) if the pattern is gone, so a future verl commit
+                  # bump doesn't silently break postStart.
+                  python3 - <<'PYEOF'
+                  path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
+                  content = open(path).read()
+                  old = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
+                  new = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\nexcept ImportError:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE\ntry:\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
+                  found = old in content
+                  open(path, "w").write(content.replace(old, new)) if found else None
+                  print("patched vllm_fp8_utils.py (FusedMoE fallback)" if found else "WARNING: FusedMoE patch pattern not found in vllm_fp8_utils.py - check manually")
+                  PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
                   # Install the common package first (verl package depends on it), then the
@@ -361,11 +389,14 @@ spec:
             limits:
             # --- Option A: 8 GPUs ---
               cpu: "64"
-              memory: "256G"
+              # 512G (was 256G): 8-rank FSDP actor + vLLM replicas + ref hold the model in
+              # host RAM per rank; measured worker peaks sit at ~250-256G regardless of batch
+              # or image size, leaving no headroom under the old 256G limit.
+              memory: "512G"
               nvidia.com/gpu: "8"
             requests:
               cpu: "48"
-              memory: "192G"
+              memory: "256G"
               nvidia.com/gpu: "8"
             # --- Option B: 4 GPUs ---
             #  cpu: "32"

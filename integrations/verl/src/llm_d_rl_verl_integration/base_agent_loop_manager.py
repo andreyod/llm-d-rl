@@ -17,13 +17,13 @@ import ray
 from omegaconf import DictConfig
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from verl.experimental.agent_loop.agent_loop import AgentLoopManager
+from verl.trainer.ppo.v1.agent_loop_tq import AgentLoopManagerTQ
 from verl.workers.rollout.llm_server import LLMServerClient
 
 logger = logging.getLogger(__name__)
 
 
-class LlmdBaseAgentLoopManager(AgentLoopManager):
+class LlmdBaseAgentLoopManager(AgentLoopManagerTQ):
     """Base class for llm-d AgentLoopManager variants.
 
     Lifecycle (runs in ``__init__``, before workers are spawned):

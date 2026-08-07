@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|llm-d>  [options]
+# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|wave-admission|llm-d>  [options]
 #
 # Usage examples:
 #   bash run_test.sh --mode native
 #   bash run_test.sh --mode epp
 #   bash run_test.sh --mode epp --steps 20 --tp 2 --n 4
 #   bash run_test.sh --mode epp-fc --task weka   # EPP routing + per-endpoint concurrency CAP (flow-control queue)
+#   bash run_test.sh --mode wave-admission --task weka   # estimation-gated admission, no EPP (see wave_admission/)
 #   bash run_test.sh --mode llm-d          # (not yet implemented)
 #
 # Options:
-#   --mode   native | epp | epp-inflight | epp-fc | llm-d (required)
+#   --mode   native | epp | epp-inflight | epp-fc | wave-admission | llm-d (required)
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | llm-d)"
+  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | wave-admission | llm-d)"
   exit 1
 fi
 
@@ -104,13 +105,29 @@ case "$MODE" in
     EPP_REPORT_COMPLETION="true"
     ;;
 
+  wave-admission)
+    # Estimation-gated admission control (no EPP): NEW conversations are
+    # gated by an in-process AdmissionLedger's estimate of per-replica free
+    # KV budget (causal per-turn-index growth estimator, wave1_size
+    # unconditional first admits); sticky placement after admission, no
+    # migration. See wave_admission/admission.py and
+    # ~/.claude/plans/steady-splashing-blanket.md. Tunables (wave1_size, GPU
+    # budget formula inputs, ...) are set via
+    # actor_rollout_ref.rollout.custom.wave_admission_* overrides (EXTRA_HYDRA
+    # below, or pass through EXTRA_OVERRIDES) - defaults match the H200 /
+    # Qwen2.5-7B-class weka ctxc64k_n256 testbed.
+    DEFAULT_NAME="qwen3_4b_grpo_waveadmission_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
+    ;;
+
   llm-d)
     echo "ERROR: --mode llm-d is not yet implemented"
     exit 1
     ;;
 
   *)
-    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | llm-d"
+    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | wave-admission | llm-d"
     exit 1
     ;;
 esac

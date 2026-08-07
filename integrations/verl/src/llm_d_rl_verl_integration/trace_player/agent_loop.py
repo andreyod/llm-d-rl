@@ -105,6 +105,14 @@ class TracePlayerAgentLoop(AgentLoopBase):
                 last_prompt_ids = prompt_ids
                 num_turns += 1
 
+        # Optional hook: server_managers that gate/track admission per
+        # trajectory (e.g. WaveAdmissionLLMClient) release their ledger entry
+        # here. Native/EPP clients don't define this, so this is a no-op for
+        # every other mode.
+        done_hook = getattr(self.server_manager, "on_trajectory_done", None)
+        if done_hook is not None:
+            await done_hook(request_id)
+
         # Return the last turn's (bounded) prompt+response as the trajectory
         # tensors. Reward is dummy, so a single well-formed turn keeps the
         # training-step tensors valid and small; the point of the run is the

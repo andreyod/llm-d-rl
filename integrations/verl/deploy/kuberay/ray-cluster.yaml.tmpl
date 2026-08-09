@@ -54,7 +54,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-head
-          image: ${IMG_VERL} # stock verl env image (for PD, build from deploy/Dockerfile.pd)
+          image: ${IMG_VERL} # verl env image; same image covers native/epp/epp-p2p/PD
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -148,6 +148,11 @@ spec:
             value: "/opt/llm-d-bins/envoy"
 
           # --- vLLM / Ray settings ---
+          # Fixed fleet-wide (not left to the pod's own default): P2P KV-cache
+          # sharing needs identical block hashes across every replica, and an
+          # unpinned/varying PYTHONHASHSEED breaks that match silently.
+          - name: PYTHONHASHSEED
+            value: "0"
           - name: VLLM_USE_V1
             value: "1"
           - name: TOKENIZERS_PARALLELISM
@@ -275,7 +280,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-worker
-          image: ${IMG_VERL} # stock verl env image (for PD, build from deploy/Dockerfile.pd)
+          image: ${IMG_VERL} # verl env image; same image covers native/epp/epp-p2p/PD
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -357,6 +362,11 @@ spec:
             value: "/opt/llm-d-bins/pd-sidecar"
 
           # --- vLLM / Ray settings ---
+          # Fixed fleet-wide (not left to the pod's own default): P2P KV-cache
+          # sharing needs identical block hashes across every replica, and an
+          # unpinned/varying PYTHONHASHSEED breaks that match silently.
+          - name: PYTHONHASHSEED
+            value: "0"
           - name: VLLM_USE_V1
             value: "1"
           - name: PYTORCH_CUDA_ALLOC_CONF

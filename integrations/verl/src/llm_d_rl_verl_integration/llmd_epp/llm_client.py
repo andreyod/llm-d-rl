@@ -1,9 +1,9 @@
 """LLMServerClient that routes via EPP gRPC, then delegates inference to the
 chosen vLLM actor handle exactly as original verl does.
 
-Non-PD: EPP picks endpoint → call actor.generate.remote() → vLLM handles it.
-PD:     EPP picks decode endpoint + sidecar headers → call actor.generate.remote(sidecar_headers=...)
-        → PDDecodeVLLMHttpServer.generate() → HTTP to local sidecar.
+Plain EPP:  EPP picks endpoint → call actor.generate.remote() → vLLM handles it.
+PD / P2P:   EPP picks endpoint + sidecar headers → call actor.generate.remote(sidecar_headers=...)
+            → PDDecodeVLLMHttpServer / P2PVLLMHttpServer.generate() → HTTP to local sidecar.
 """
 
 from __future__ import annotations
@@ -35,8 +35,9 @@ class EPPLLMClient(LLMServerClient):
             at startup. server_address must match what EPP returns as the
             ``x-gateway-destination-endpoint`` header.
         model_name: model identifier sent in the EPP request body.
-        pd_mode: if True, forward sidecar_headers returned by EPP to
-            actor.generate.remote() so PDDecodeVLLMHttpServer can reach the sidecar.
+        use_sidecar: if True, forward sidecar_headers returned by EPP to
+            actor.generate.remote() so the actor's local sidecar (PD's
+            PDDecodeVLLMHttpServer or P2P's P2PVLLMHttpServer) can reach it.
         report_completion: passed to ``EPPGrpcClient.route()`` as
             ``track_completion``. If True, EPP's in-flight counter reflects the
             real generation window instead of the pick-time snapshot. Needed for
@@ -55,7 +56,7 @@ class EPPLLMClient(LLMServerClient):
         grpc_addr: str,
         address_to_handle: dict[str, ray.actor.ActorHandle],
         model_name: str,
-        pd_mode: bool = False,
+        use_sidecar: bool = False,
         report_completion: bool = False,
         **kwargs,
     ):
@@ -63,7 +64,7 @@ class EPPLLMClient(LLMServerClient):
         self._grpc_addr = grpc_addr
         self._address_to_handle = address_to_handle
         self._model_name = model_name
-        self._pd_mode = pd_mode
+        self._use_sidecar = use_sidecar
         self._report_completion = report_completion
         self._epp_client = None  # created on workers after unpickling via __setstate__
 
@@ -108,7 +109,7 @@ class EPPLLMClient(LLMServerClient):
             )
 
         extra_kwargs: dict[str, Any] = {}
-        if self._pd_mode and sidecar_headers:
+        if self._use_sidecar and sidecar_headers:
             extra_kwargs["sidecar_headers"] = sidecar_headers
 
         out = None

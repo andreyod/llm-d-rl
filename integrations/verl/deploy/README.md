@@ -34,10 +34,12 @@ Do this on **every** node (head and all workers). On KubeRay this runs from the 
 
 [`deploy/Dockerfile.verl.vllm-p2p`](Dockerfile.verl.vllm-p2p) builds an alternative
 environment image for testing verl against a nightly/dev vLLM wheel instead of a pinned stable
-release - same role as `Dockerfile.pd` (below), different reason (dev vLLM instead of PD/NIXL).
-Built from the verl 0.24 recipe (torch, CUDA 13.0.2, transformers, flash-attn, etc.) but pins vLLM
-to a dev wheel off `wheels.vllm.ai` at a specific commit, to pick up two unmerged upstream PR fixes
-verl's weight-sync flow needs (see the Dockerfile's own comments for which PRs and why).
+release. Built from the verl 0.24 recipe (torch, CUDA 13.0.2, transformers, flash-attn, etc.) but
+pins vLLM to a dev wheel off `wheels.vllm.ai` at a specific commit, to pick up two unmerged
+upstream PR fixes verl's weight-sync flow needs (see the Dockerfile's own comments for which PRs
+and why). Also bakes in NIXL plus the vLLM patches PD and P2P KV-cache sharing both need (formerly
+a separate `Dockerfile.pd` layered on top of this one - folded in directly so every mode
+(native/EPP/P2P/PD) runs on the same image).
 
 ```bash
 docker build -f deploy/Dockerfile.verl.vllm-p2p -t <your-registry>/verl:vllm024.devN .
@@ -159,8 +161,9 @@ full commands for each mode.
 
 ### PD disaggregation
 
-Add these on top of whichever mode you use. Use `deploy/epp-config-pd.yaml` as the EPP config, and
-the `deploy/Dockerfile.pd` image (PD needs NIXL and vLLM/verl patches not in the stock image).
+Add these on top of whichever mode you use. Use `deploy/epp-config-pd.yaml` as the EPP config;
+no separate image is needed - NIXL and the vLLM/verl patches PD needs are already baked into the
+standard `deploy/Dockerfile.verl.vllm-p2p` image (see "Nightly-vLLM environment image" above).
 
 ```bash
 INFER_BACKEND=vllm-llmd-pd \

@@ -114,6 +114,11 @@ class LlmdActor:
             "--metrics-port", "9090",
             "--secure-serving=false",
             "--tracing=false",
+            # burst-prefix-cache-producer (used by every burst-based mode: epp,
+            # epp-p2p, epp-inflight, epp-fc - not p2p-specific) is Alpha-stability
+            # in current EPP builds; the runner now hard-fails config loading
+            # ("Plugin stability validation failed") unless this is set.
+            "--allow-experimental-plugins",
             f"-v={os.environ.get('VERL_EPP_VERBOSITY', '1')}",
         ]
         env = {**os.environ, "POD_NAME": pod_name}

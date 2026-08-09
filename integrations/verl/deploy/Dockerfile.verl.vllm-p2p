@@ -222,3 +222,58 @@ RUN pip install --no-deps --upgrade "nvidia-nccl-cu13>=2.29.7,<3.0"
 RUN pip uninstall -y nvidia-cutlass-dsl nvidia-cutlass-dsl-libs-base nvidia-cutlass-dsl-libs-core \
         nvidia-cutlass-dsl-libs-cu12 nvidia-cutlass-dsl-libs-cu13 && \
     pip install --no-cache-dir "nvidia-cutlass-dsl==4.5.3"
+
+# --- NIXL + KV-connector fixes (needed by PD and P2P; baked directly into this
+# image rather than a separate Dockerfile.pd layered on top, which is how this
+# used to work - that meant PD mode's image build defaulted to a separate
+# BASE_IMAGE build-arg, verlai/verl:vllm018.dev1, NOT this nightly-fixed image,
+# so PD wasn't actually guaranteed to have the flash-attn/transformers/cutlass-dsl
+# fixes above unless someone remembered to override that arg. One image now
+# covers every mode: native/epp/epp-p2p/PD.) ---
+
+# NIXL for vLLM NixlConnector (P/D KV transfer) and OffloadingConnector's P2P tier
+# (both use NIXL as their underlying transport). verl base images do not ship
+# kv_connectors deps. Without this, vLLM fails at engine init with:
+# RuntimeError: NIXL is not available
+RUN pip install "nixl==0.10.1" "nixl-cu12==0.10.1" && \
+    python3 -c "from nixl._api import nixl_agent; print('NIXL OK')"
+
+# Fix vLLM's token-in/token-out generate path — forward kv_transfer_params to engine.
+# /inference/v1/generate receives kv_transfer_params (do_remote_decode=true for
+# NIXL PD, remote_kv_source for P2P) from the llm-d sidecar, but this serving class
+# never copies it into sampling_params.extra_args. Both NixlConnector and
+# OffloadingConnector read their respective keys from
+# sampling_params.extra_args.get("kv_transfer_params") (vLLM's MultiConnector
+# dispatches each connector's own sub-keys from that single dict), so without this
+# patch it always sees None and no KV cache is transferred. The fix itself is
+# generic (any non-empty request.kv_transfer_params gets forwarded) - not gated to
+# NIXL's own do_remote_decode key - so it covers P2P's remote_kv_source the same way.
+# Confirmed genuinely still needed at this pinned commit (not yet fixed upstream):
+# vllm-project/vllm#42644 ("Thread kv_transfer_params into engine for
+# /inference/v1/generate (disagg)") is open/unmerged and describes this exact bug.
+# File path is `entrypoints/scale_out/token_in_token_out/serving.py` at this nightly
+# (older vLLM/verl recipes call the equivalent file `entrypoints/serve/disagg/serving.py`
+# - same code shape, just renamed/relocated; verify the path again if bumping VLLM_COMMIT).
+# This path is specific to /inference/v1/generate (token-in token-out);
+# /v1/chat/completions already forwards kv_transfer_params correctly, which is why
+# other deployments work.
+RUN sed -i \
+    's/        result_generator = self\.engine_client\.generate(/        if request.kv_transfer_params:\n            if sampling_params.extra_args is None:\n                sampling_params.extra_args = {}\n            sampling_params.extra_args["kv_transfer_params"] = request.kv_transfer_params\n\n        result_generator = self.engine_client.generate(/' \
+    /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+
+# NOTE: an earlier version of this Dockerfile also patched scheduler.py/gpu_worker.py/
+# abstract.py/engine/core.py to add an external drain_kv_connector() before
+# reset_prefix_cache(), working around a NixlConnector notification-drain race on an
+# older vLLM. Removed at this pinned commit: (1) 2 of its 4 target lines no longer
+# exist verbatim (code restructured), so blindly re-deriving matching patterns would
+# be guesswork, not a verified fix; (2) OffloadingConnector (P2P's connector) already
+# drains natively - offloading/scheduler.py's own reset_cache() flushes all in-flight
+# jobs directly, and vLLM core's _reset_caches() already calls
+# reset_prefix_cache(reset_connector=True) by default (a no-op when no connector is
+# configured), so the external hack is solving a problem the connector-native path
+# now handles internally; (3) general sleep-mode drain robustness has seen real
+# upstream work in this same window (vllm-project/vllm#45520, fixed by #45552) -
+# a different but adjacent bug class, suggesting this whole area has moved since the
+# original patch was written. If PD/NixlConnector specifically still hits a
+# notification-drain race on this vLLM version, that needs its own fresh diagnosis,
+# not a resurrection of this patch as-is.

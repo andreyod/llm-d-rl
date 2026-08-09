@@ -125,11 +125,11 @@ Replicas are split into prefill and decode roles by `PDEngineReplicaFactory`. Th
 Role labels (`llm-d.ai/role: prefill` / `decode`) are written to the EPP endpoints YAML so EPP's
 `prefill-filter` and `decode-filter` plugins route correctly.
 
-PD needs a few extra dependencies (NIXL) and vLLM/verl patches that are not in the stock image;
-[`deploy/Dockerfile.pd`](../deploy/Dockerfile.pd) builds a ready-to-use image with them on top of
-`verlai/verl:vllm018.dev1`. That image is only needed for PD - both modes run on the stock image
-without it. The PD Hydra overrides are in the
-[general deployment guide](../deploy/README.md#pd-disaggregation).
+PD needs a few extra dependencies (NIXL) and vLLM/verl patches that are not in the stock verl
+environment image; these are baked directly into
+[`deploy/Dockerfile.verl.vllm-p2p`](../deploy/Dockerfile.verl.vllm-p2p) - the same image every
+other mode (native/EPP/P2P) already uses, so PD needs no separate build or image tag. The PD
+Hydra overrides are in the [general deployment guide](../deploy/README.md#pd-disaggregation).
 
 ## Endpoints YAML
 

@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|wave-admission|llm-d>  [options]
+# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|epp-p2p|wave-admission|llm-d>  [options]
 #
 # Usage examples:
 #   bash run_test.sh --mode native
 #   bash run_test.sh --mode epp
 #   bash run_test.sh --mode epp --steps 20 --tp 2 --n 4
 #   bash run_test.sh --mode epp-fc --task weka   # EPP routing + per-endpoint concurrency CAP (flow-control queue)
+#   bash run_test.sh --mode epp-p2p              # EPP routing + P2P KV-cache sharing (every replica pulls/serves)
 #   bash run_test.sh --mode wave-admission --task weka   # estimation-gated admission, no EPP (see wave_admission/)
 #   bash run_test.sh --mode llm-d          # (not yet implemented)
 #
 # Options:
-#   --mode   native | epp | epp-inflight | epp-fc | wave-admission | llm-d (required)
+#   --mode   native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d (required)
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
@@ -45,7 +46,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | wave-admission | llm-d)"
+  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d)"
   exit 1
 fi
 
@@ -57,6 +58,9 @@ fi
 AGENT_LOOP_MANAGER_CLASS=""
 EPP_CONFIG_FILE=""
 EPP_REPORT_COMPLETION=""
+ROLLOUT_NAME=""        # only epp-p2p sets this (registers a non-default rollout backend)
+EXTERNAL_LIB=""        # only epp-p2p sets this (model.external_lib import hook)
+P2P_ENGINE_HYDRA=""    # only epp-p2p sets this (OffloadingConnector engine_kwargs)
 
 case "$MODE" in
   native)
@@ -121,13 +125,60 @@ case "$MODE" in
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
     ;;
 
+  epp-p2p)
+    # P2P KV-cache sharing (llm-d/llm-d PR #2067): every replica runs a local llm-d
+    # routing sidecar (--kv-connector=offloading) so EPP's p2p-source-producer
+    # header (x-kv-cache-source-host-port) becomes kv_transfer_params.remote_kv_source
+    # before the request reaches vLLM's OffloadingConnector P2P tier, instead of
+    # recomputing the cached prefix. rollout.name=vllm-llmd-p2p registers
+    # P2PEngineReplicaFactory (register_p2p.py / p2p_replica.py) - every replica is
+    # symmetric (both pulls and serves), unlike PD's prefill/decode split, so no
+    # disaggregation.* replica counts are needed. See deploy/epp-config-p2p.yaml.
+    DEFAULT_NAME="qwen3_4b_grpo_eppp2p_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
+    # Override via EPP_P2P_CONFIG=epp-config-p2p-load.yaml for the load-only/no-burst
+    # arm (destination picking decoupled from prefix locality - see that file's
+    # header comment for why this matters for actually exercising the P2P pull path).
+    EPP_CONFIG_FILE="${EPP_P2P_CONFIG:-epp-config-p2p.yaml}"
+    ROLLOUT_NAME="vllm-llmd-p2p"
+    EXTERNAL_LIB="llm_d_rl_verl_integration.register_p2p"
+    # --block-size must match exactly across every replica (guide requirement: a
+    # mismatch makes the whole pull path silently inert / vLLM rejects the transfer).
+    # offload_prompt_only=false: the default (true) never offloads decode-phase
+    # (generated) blocks, so a peer pull of freshly-generated content would miss -
+    # see p2psource/README.md's "Deployment Requirements".
+    #
+    # VERL_USE_EXTERNAL_MODULES (not just model.external_lib above): verl/__init__.py
+    # reads this env var and imports it at `import verl` time, in EVERY process that
+    # touches verl - including the TaskRunnerV1 driver, which resolves rollout.name
+    # via RolloutReplicaRegistry.get() long before any FSDP worker (where
+    # model.external_lib is actually consumed, inside HFModelConfig instantiation)
+    # ever starts. Without this, the driver never imports register_p2p at all and
+    # `rollout.name=vllm-llmd-p2p` fails with "Unknown rollout mode" - model.external_lib
+    # alone only reaches the later _ROLLOUT_REGISTRY lookup, not this earlier one.
+    # cpu_bytes_to_use: the ONLY strictly-required kv_connector_extra_config key
+    # (vllm/v1/kv_offload/cpu/spec.py raises if unset - everything else there has
+    # a default). 4GiB per replica x n_gpus_per_node=8 replicas = 32GiB host RAM,
+    # comfortably inside this cluster's node RAM; not tuned/sized from measured
+    # KV capacity, just a safe smoke-test default. Override via
+    # P2P_CPU_BYTES_TO_USE for a real sizing pass.
+    P2P_ENGINE_HYDRA="
+      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296}"
+    ;;
+
   llm-d)
     echo "ERROR: --mode llm-d is not yet implemented"
     exit 1
     ;;
 
   *)
-    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | wave-admission | llm-d"
+    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d"
     exit 1
     ;;
 esac
@@ -158,6 +209,18 @@ fi
 if [[ -n "$EPP_REPORT_COMPLETION" ]]; then
   EXTRA_HYDRA="${EXTRA_HYDRA} \
   +actor_rollout_ref.rollout.custom.epp_report_completion=${EPP_REPORT_COMPLETION}"
+fi
+if [[ -n "$ROLLOUT_NAME" ]]; then
+  EXTRA_HYDRA="${EXTRA_HYDRA} \
+  actor_rollout_ref.rollout.name=${ROLLOUT_NAME}"
+fi
+if [[ -n "$EXTERNAL_LIB" ]]; then
+  EXTRA_HYDRA="${EXTRA_HYDRA} \
+  +actor_rollout_ref.model.external_lib=${EXTERNAL_LIB}"
+fi
+if [[ -n "$P2P_ENGINE_HYDRA" ]]; then
+  EXTRA_HYDRA="${EXTRA_HYDRA} \
+  ${P2P_ENGINE_HYDRA}"
 fi
 EXTRA_HYDRA="${EXTRA_HYDRA} \
   +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml"

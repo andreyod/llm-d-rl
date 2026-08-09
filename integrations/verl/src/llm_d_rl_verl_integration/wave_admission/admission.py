@@ -157,6 +157,9 @@ class AdmissionLedger:
         reserve_mode: str = "size",
         reserve_z: float = 0.0,
         migration_cost_ratio: float = 1.0,
+        p2p_kv_available: bool = False,
+        p2p_connector_port: int = 7777,
+        migration_cost_ratio_p2p: float = 0.0,
     ):
         self._replicas = list(replicas)
         self._budget = budget_tokens_per_replica
@@ -165,6 +168,20 @@ class AdmissionLedger:
         self._poll_interval_s = poll_interval_s
         self._allow_reactive_migration = allow_reactive_migration
         self._migration_cost_ratio = migration_cost_ratio
+        # A migration is only "expensive" (full context_size recompute) when
+        # there is no cheap way to move the KV. With the P2P KV-cache-sharing
+        # rollout backend (P2PVLLMHttpServer / OffloadingConnector, see
+        # p2p_replica.py), every replica offloads its KV to a CPU tier every
+        # other replica can pull from - so once we KNOW the exact source
+        # replica (our own sticky `_resident` map, not EPP's p2p-source-producer
+        # discovery), the migration cost collapses toward a P2P pull instead of
+        # a full re-prefill. migration_cost_ratio_p2p default 0.0 is a
+        # deliberate benchmarking assumption (per user instruction) to measure
+        # the UPPER BOUND of what breaking session-affinity is worth once
+        # cross-GPU KV transfer is ~free - not a measured real transfer cost.
+        self._p2p_kv_available = p2p_kv_available
+        self._p2p_connector_port = p2p_connector_port
+        self._migration_cost_ratio_p2p = migration_cost_ratio_p2p
 
         self._used: dict[str, float] = {r: 0.0 for r in replicas}
         self._estimator = GrowthEstimator(
@@ -186,9 +203,11 @@ class AdmissionLedger:
 
         logger.info(
             "[AdmissionLedger] %d replicas, budget=%.0f tok/replica, wave1_size=%d, "
-            "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f",
+            "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f, "
+            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f",
             len(replicas), budget_tokens_per_replica, wave1_size, allow_reactive_migration,
             reserve_mode, reserve_z, migration_cost_ratio,
+            p2p_kv_available, migration_cost_ratio_p2p,
         )
 
     def _reserve(self, replica: str) -> float:
@@ -234,8 +253,14 @@ class AdmissionLedger:
         size = self._history.get(request_id, {}).get(turn_index, 0.0)
         self._used[replica] = max(0.0, self._used[replica] - size)
 
-    async def acquire(self, request_id: str, *, turn_index: int, context_size: float) -> str:
-        """Return the replica this request should dispatch to.
+    async def acquire(self, request_id: str, *, turn_index: int, context_size: float) -> dict:
+        """Return {"replica": <address>, "kv_source": <address-or-None>} for
+        this request to dispatch to. ``kv_source`` is only ever non-None on a
+        migration into a NEW replica while ``p2p_kv_available`` is set - it
+        names the replica the conversation's KV was previously resident on
+        (known exactly, from our own sticky ``_resident`` map), for the
+        caller to stamp as ``x-kv-cache-source-host-port`` so the P2P sidecar
+        pulls it instead of the destination recomputing from scratch.
 
         turn_index == 0 (a brand-new conversation): may WAIT (poll) until a
         replica has enough estimated headroom, unless still inside the
@@ -281,37 +306,50 @@ class AdmissionLedger:
                 )
 
         self._book(request_id, replica, 0, context_size)
-        return replica
+        return {"replica": replica, "kv_source": None}
 
-    def _continue_or_migrate(self, request_id: str, turn_index: int, context_size: float) -> str:
+    def _continue_or_migrate(self, request_id: str, turn_index: int, context_size: float) -> dict:
         resident = self._resident.get(request_id)
         if resident is None:
             # Shouldn't happen (turn 0 always assigns first) but fail safe
             # rather than crash a training run.
             replica = self._least_loaded()
             self._book(request_id, replica, turn_index, context_size)
-            return replica
+            return {"replica": replica, "kv_source": None}
 
         prev_size = self._history.get(request_id, {}).get(turn_index - 1, 0.0)
         incremental_need = max(0.0, context_size - prev_size)
         if self._estimated_free(resident) >= incremental_need:
             self._book(request_id, resident, turn_index, context_size)
-            return resident
+            return {"replica": resident, "kv_source": None}
 
         # Resident can't fit the incremental growth - but migrating is not
-        # free: with no offload/P2P available, a migrated turn always pays a
-        # FULL re-prefill of context_size, measured empirically this session
-        # at ~33% more wall-clock than an incremental continuation at typical
-        # sizes (~2.5s extra at ~50K tokens). Only worth paying that real
-        # cost if the shortfall it relieves is itself large relative to that
-        # cost - otherwise migration just adds recompute on top of a marginal
-        # (possibly false, since our budget estimate is conservative) crisis.
-        # migration_cost_ratio=1.0 (default) requires the deficit to be at
-        # least as large as the full re-prefill it would cost to relieve it.
+        # free in general: with no offload/P2P available, a migrated turn
+        # pays a FULL re-prefill of context_size, measured empirically this
+        # session at ~33% more wall-clock than an incremental continuation at
+        # typical sizes (~2.5s extra at ~50K tokens). Only worth paying that
+        # real cost if the shortfall it relieves is itself large relative to
+        # that cost - otherwise migration just adds recompute on top of a
+        # marginal (possibly false, since our budget estimate is
+        # conservative) crisis. migration_cost_ratio=1.0 (default, no P2P)
+        # requires the deficit to be at least as large as the full re-prefill
+        # it would cost to relieve it.
+        #
+        # When p2p_kv_available, the destination can PULL the resident's KV
+        # over the P2P tier instead of recomputing it (we know the exact
+        # source replica - our own `resident` var - so no discovery step is
+        # needed), so migration_cost_ratio_p2p (default 0.0, near-free) is
+        # used instead: the deficit threshold to justify migrating collapses
+        # toward "migrate whenever it doesn't fit and somewhere else does",
+        # the real-cluster analog of the simulator's cheap-transfer
+        # "online_lb" finding (see FINDINGS.md section D: -29% vs sticky).
+        effective_cost_ratio = (
+            self._migration_cost_ratio_p2p if self._p2p_kv_available else self._migration_cost_ratio
+        )
         deficit = incremental_need - self._estimated_free(resident)
         migration_worth_it = (
             self._allow_reactive_migration
-            and deficit >= self._migration_cost_ratio * context_size
+            and deficit >= effective_cost_ratio * context_size
         )
         if migration_worth_it:
             others = [g for g in self._replicas if g != resident]
@@ -320,20 +358,24 @@ class AdmissionLedger:
                 self._migrations += 1
                 self._release_booking(request_id, resident, turn_index - 1)
                 self._book(request_id, target, turn_index, context_size)
+                kv_source = None
+                if self._p2p_kv_available:
+                    resident_host = resident.rsplit(":", 1)[0]
+                    kv_source = f"{resident_host}:{self._p2p_connector_port}"
                 logger.info(
                     "[AdmissionLedger] migrated %s: %s -> %s at turn %d "
-                    "(deficit %.0f >= %.1fx migration cost %.0f)",
+                    "(deficit %.0f >= %.2fx migration cost %.0f, kv_source=%s)",
                     request_id, resident, target, turn_index,
-                    deficit, self._migration_cost_ratio, context_size,
+                    deficit, effective_cost_ratio, context_size, kv_source,
                 )
-                return target
+                return {"replica": target, "kv_source": kv_source}
 
         # Nowhere (including resident) has room, migration is disabled, or
         # the deficit isn't severe enough to justify the recompute cost:
         # stay resident and overshoot rather than blocking an in-flight
         # conversation or paying to relieve a marginal shortfall.
         self._book(request_id, resident, turn_index, context_size)
-        return resident
+        return {"replica": resident, "kv_source": None}
 
     def record_turn(self, request_id: str, *, turn_index: int, context_size: float) -> None:
         """Called after each turn's generation completes (any turn_index) to

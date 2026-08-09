@@ -9,10 +9,11 @@
 #   bash run_test.sh --mode epp-p2p              # EPP routing + P2P KV-cache sharing (every replica pulls/serves)
 #   bash run_test.sh --mode epp-sglang           # EPP direct-gRPC routing, SGLang replicas instead of vLLM
 #   bash run_test.sh --mode wave-admission --task weka   # estimation-gated admission, no EPP (see wave_admission/)
+#   bash run_test.sh --mode wave-admission-p2p --task weka   # wave-admission migration + P2P KV pull (near-free migration)
 #   bash run_test.sh --mode llm-d          # (not yet implemented)
 #
 # Options:
-#   --mode   native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d (required)
+#   --mode   native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | wave-admission-p2p | llm-d (required)
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d)"
+  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | wave-admission-p2p | llm-d)"
   exit 1
 fi
 
@@ -126,6 +127,42 @@ case "$MODE" in
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
     ;;
 
+  wave-admission-p2p)
+    # Wave-admission (same estimation-gated admission + reactive migration as
+    # plain wave-admission above), but on the P2P KV-cache-sharing rollout
+    # backend (rollout.name=vllm-llmd-p2p, same OffloadingConnector wiring as
+    # epp-p2p below) so a migration can PULL the resident's KV from its
+    # previous replica instead of recomputing it. AdmissionLedger already
+    # knows the exact source replica (our own sticky `_resident` map), so no
+    # EPP / p2p-source-producer discovery step is needed - WaveAdmissionLLMClient
+    # stamps x-kv-cache-source-host-port itself. custom.wave_admission_p2p_kv_available=true
+    # switches the migration-worth-it gate from migration_cost_ratio (full
+    # re-prefill, default 1.0) to migration_cost_ratio_p2p (default 0.0 - a
+    # deliberate benchmarking assumption that cross-GPU KV transfer is ~free,
+    # per the simulator's cheap-transfer "online_lb" finding, FINDINGS.md
+    # section D: -29% vs sticky, beating even full-lookahead offline
+    # placement). reserve_mode=size/reserve_z=1.5/max_wait_s=20 are the best
+    # real-cluster tunables found for plain wave-admission (HANDOVER.md
+    # section I.7: -4.5%/-7.3% vs native at 64K/96K) - reused here as the
+    # starting point now that migration itself is far cheaper.
+    DEFAULT_NAME="qwen3_4b_grpo_waveadmissionp2p_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
+    ROLLOUT_NAME="vllm-llmd-p2p"
+    EXTERNAL_LIB="llm_d_rl_verl_integration.register_p2p"
+    P2P_ENGINE_HYDRA="
+      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
+      +actor_rollout_ref.rollout.custom.wave_admission_p2p_kv_available=true \
+      +actor_rollout_ref.rollout.custom.wave_admission_reserve_mode=size \
+      +actor_rollout_ref.rollout.custom.wave_admission_reserve_z=1.5 \
+      +actor_rollout_ref.rollout.custom.wave_admission_max_wait_s=${WAVE_ADMISSION_MAX_WAIT_S:-20}"
+    ;;
+
   epp-p2p)
     # P2P KV-cache sharing (llm-d/llm-d PR #2067): every replica runs a local llm-d
     # routing sidecar (--kv-connector=offloading) so EPP's p2p-source-producer
@@ -191,7 +228,7 @@ case "$MODE" in
     ;;
 
   *)
-    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d"
+    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | wave-admission-p2p | llm-d"
     exit 1
     ;;
 esac

@@ -86,9 +86,11 @@ class WaveAdmissionLLMClient(LLMServerClient):
         turn = self._turn_counts.get(rid, 0)
         context_size = float(len(prompt_ids) + _forced_output_len(sampling_params))
 
-        replica = await self._admission_ledger.acquire.remote(
+        placement = await self._admission_ledger.acquire.remote(
             rid, turn_index=turn, context_size=context_size,
         )
+        replica = placement["replica"]
+        kv_source = placement.get("kv_source")
         t_pick = time.monotonic()
         actor = self._address_to_handle[replica]
 
@@ -97,6 +99,18 @@ class WaveAdmissionLLMClient(LLMServerClient):
             multimodal_kwargs["audio_data"] = audio_data
         if mm_processor_kwargs:
             multimodal_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
+
+        # Only set when the ledger just migrated this conversation onto a NEW
+        # replica with p2p_kv_available - names the replica the KV was
+        # previously resident on, so the destination's P2P sidecar
+        # (P2PVLLMHttpServer, --kv-connector=offloading) pulls it instead of
+        # recomputing from scratch. See admission.py's _continue_or_migrate.
+        # Only added to the call at all when set: the base (non-P2P)
+        # vLLMHttpServer.generate() used by plain wave-admission mode has no
+        # sidecar_headers parameter, unlike PDDecodeVLLMHttpServer/
+        # P2PVLLMHttpServer's override.
+        if kv_source:
+            kwargs["sidecar_headers"] = {"x-kv-cache-source-host-port": kv_source}
 
         out = None
         try:

@@ -29,6 +29,9 @@ To use, set in the training YAML config:
           wave_admission_reserve_mode: size                  # optional, "turn"|"size"|"turn_size", default "size"
           wave_admission_reserve_z: 1.5                      # optional, default 1.5
           wave_admission_migration_cost_ratio: 1.0           # optional, default 1.0
+          wave_admission_p2p_kv_available: false             # optional, default false - set true with --mode wave-admission-p2p
+          wave_admission_p2p_connector_port: 7777             # optional, must match P2PVLLMHttpServer's --p2p-connector-port
+          wave_admission_migration_cost_ratio_p2p: 0.0        # optional, default 0.0 (benchmarking assumption: ~free P2P pull)
 """
 
 from __future__ import annotations
@@ -97,13 +100,18 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
         reserve_mode = str(_custom_get(custom, "wave_admission_reserve_mode", "size"))
         reserve_z = float(_custom_get(custom, "wave_admission_reserve_z", 1.5))
         migration_cost_ratio = float(_custom_get(custom, "wave_admission_migration_cost_ratio", 1.0))
+        p2p_kv_available = bool(_custom_get(custom, "wave_admission_p2p_kv_available", False))
+        p2p_connector_port = int(_custom_get(custom, "wave_admission_p2p_connector_port", 7777))
+        migration_cost_ratio_p2p = float(_custom_get(custom, "wave_admission_migration_cost_ratio_p2p", 0.0))
 
         logger.info(
             "[WaveAdmissionAgentLoopManager] %d replicas, budget=%.0f tok/replica, "
             "wave1_size=%d, initial_growth_guess=%.0f, prior_weight=%.1f, max_wait_s=%.0f, "
-            "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f",
+            "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f, "
+            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f",
             len(server_addresses), budget, wave1_size, initial_growth_guess, prior_weight, max_wait_s,
             allow_reactive_migration, reserve_mode, reserve_z, migration_cost_ratio,
+            p2p_kv_available, migration_cost_ratio_p2p,
         )
 
         # Pin the ledger to the head node (same rationale as LlmdActor: one
@@ -122,6 +130,9 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
             reserve_mode=reserve_mode,
             reserve_z=reserve_z,
             migration_cost_ratio=migration_cost_ratio,
+            p2p_kv_available=p2p_kv_available,
+            p2p_connector_port=p2p_connector_port,
+            migration_cost_ratio_p2p=migration_cost_ratio_p2p,
         )
 
     def _create_llm_client(self) -> LLMServerClient:

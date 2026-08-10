@@ -161,6 +161,16 @@ case "$MODE" in
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_mode=size \
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_z=1.5 \
       +actor_rollout_ref.rollout.custom.wave_admission_max_wait_s=${WAVE_ADMISSION_MAX_WAIT_S:-20}"
+    # EXPERIMENTAL, NOT live-validated (see p2p_replica.py's _generate_direct()
+    # docstring) - skips the sidecar and calls vLLM's native endpoint directly.
+    # VERL_P2P_NOSIDECAR must reach the Ray actor process via runtime_env
+    # (os.environ inside the worker, not this script's own shell env).
+    if [[ "${WAVE_ADMISSION_P2P_NOSIDECAR:-false}" == "true" ]]; then
+      P2P_ENGINE_HYDRA="${P2P_ENGINE_HYDRA} \
+      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_NOSIDECAR=true \
+      +actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true \
+      +actor_rollout_ref.rollout.custom.wave_admission_p2p_direct_port=${WAVE_ADMISSION_P2P_DIRECT_PORT:-5710}"
+    fi
     ;;
 
   epp-p2p)

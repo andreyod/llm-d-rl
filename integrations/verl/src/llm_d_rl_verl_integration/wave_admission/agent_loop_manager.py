@@ -32,6 +32,8 @@ To use, set in the training YAML config:
           wave_admission_p2p_kv_available: false             # optional, default false - set true with --mode wave-admission-p2p
           wave_admission_p2p_connector_port: 7777             # optional, must match P2PVLLMHttpServer's --p2p-connector-port
           wave_admission_migration_cost_ratio_p2p: 0.0        # optional, default 0.0 (benchmarking assumption: ~free P2P pull)
+          wave_admission_p2p_nosidecar: false                 # optional, default false - EXPERIMENTAL, not live-validated (see p2p_replica.py's _generate_direct() docstring); bypasses the sidecar and calls vLLM's native endpoint directly
+          wave_admission_p2p_direct_port: 5710                # optional, only used when p2p_nosidecar=true; must match vLLM's own VLLM_P2P_SIDE_CHANNEL_PORT (default 5710), NOT wave_admission_p2p_connector_port
 """
 
 from __future__ import annotations
@@ -103,15 +105,19 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
         p2p_kv_available = bool(_custom_get(custom, "wave_admission_p2p_kv_available", False))
         p2p_connector_port = int(_custom_get(custom, "wave_admission_p2p_connector_port", 7777))
         migration_cost_ratio_p2p = float(_custom_get(custom, "wave_admission_migration_cost_ratio_p2p", 0.0))
+        p2p_nosidecar = bool(_custom_get(custom, "wave_admission_p2p_nosidecar", False))
+        p2p_direct_port = int(_custom_get(custom, "wave_admission_p2p_direct_port", 5710))
+        # Read by _create_llm_client() below, which has no access to `custom`.
+        self._p2p_nosidecar = p2p_nosidecar
 
         logger.info(
             "[WaveAdmissionAgentLoopManager] %d replicas, budget=%.0f tok/replica, "
             "wave1_size=%d, initial_growth_guess=%.0f, prior_weight=%.1f, max_wait_s=%.0f, "
             "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f, "
-            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f",
+            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f, p2p_nosidecar=%s, p2p_direct_port=%d",
             len(server_addresses), budget, wave1_size, initial_growth_guess, prior_weight, max_wait_s,
             allow_reactive_migration, reserve_mode, reserve_z, migration_cost_ratio,
-            p2p_kv_available, migration_cost_ratio_p2p,
+            p2p_kv_available, migration_cost_ratio_p2p, p2p_nosidecar, p2p_direct_port,
         )
 
         # Pin the ledger to the head node (same rationale as LlmdActor: one
@@ -133,6 +139,8 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
             p2p_kv_available=p2p_kv_available,
             p2p_connector_port=p2p_connector_port,
             migration_cost_ratio_p2p=migration_cost_ratio_p2p,
+            p2p_nosidecar=p2p_nosidecar,
+            p2p_direct_port=p2p_direct_port,
         )
 
     def _create_llm_client(self) -> LLMServerClient:
@@ -141,4 +149,5 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
             load_balancer_handle=self.llm_client._load_balancer,
             address_to_handle=self._address_to_handle,
             admission_ledger=self._admission_ledger,
+            p2p_nosidecar=self._p2p_nosidecar,
         )

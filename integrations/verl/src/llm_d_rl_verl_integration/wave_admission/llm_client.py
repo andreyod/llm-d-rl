@@ -48,11 +48,17 @@ class WaveAdmissionLLMClient(LLMServerClient):
         *,
         address_to_handle: dict[str, ray.actor.ActorHandle],
         admission_ledger: ray.actor.ActorHandle,
+        p2p_nosidecar: bool = False,
         **kwargs,
     ):
         super().__init__(config=config, load_balancer_handle=load_balancer_handle, **kwargs)
         self._address_to_handle = address_to_handle
         self._admission_ledger = admission_ledger
+        # See p2p_replica.py's VERL_P2P_NOSIDECAR docstring - when set, migration
+        # dispatch builds kv_transfer_params directly instead of sidecar_headers,
+        # matching P2PVLLMHttpServer._generate_direct()'s expected shape.
+        # UNVALIDATED end-to-end as of this writing - see that method's docstring.
+        self._p2p_nosidecar = p2p_nosidecar
 
     def __setstate__(self, state):
         self.__dict__.update(state)
@@ -107,10 +113,24 @@ class WaveAdmissionLLMClient(LLMServerClient):
         # recomputing from scratch. See admission.py's _continue_or_migrate.
         # Only added to the call at all when set: the base (non-P2P)
         # vLLMHttpServer.generate() used by plain wave-admission mode has no
-        # sidecar_headers parameter, unlike PDDecodeVLLMHttpServer/
-        # P2PVLLMHttpServer's override.
+        # sidecar_headers/kv_transfer_params parameter, unlike
+        # PDDecodeVLLMHttpServer/P2PVLLMHttpServer's override.
         if kv_source:
-            kwargs["sidecar_headers"] = {"x-kv-cache-source-host-port": kv_source}
+            if self._p2p_nosidecar:
+                # Bypasses the sidecar entirely - see
+                # P2PVLLMHttpServer._generate_direct()'s docstring for the
+                # exact shape vLLM's own P2P manager expects, and the
+                # unconfirmed remote_port assumption.
+                host, _, port = kv_source.rpartition(":")
+                kwargs["kv_transfer_params"] = {
+                    "remote_kv_source": {
+                        "remote_host": host,
+                        "remote_port": int(port),
+                        "kv_request_id": uuid4().hex,
+                    }
+                }
+            else:
+                kwargs["sidecar_headers"] = {"x-kv-cache-source-host-port": kv_source}
 
         out = None
         try:

@@ -160,6 +160,8 @@ class AdmissionLedger:
         p2p_kv_available: bool = False,
         p2p_connector_port: int = 7777,
         migration_cost_ratio_p2p: float = 0.0,
+        p2p_nosidecar: bool = False,
+        p2p_direct_port: int = 5710,
     ):
         self._replicas = list(replicas)
         self._budget = budget_tokens_per_replica
@@ -182,6 +184,13 @@ class AdmissionLedger:
         self._p2p_kv_available = p2p_kv_available
         self._p2p_connector_port = p2p_connector_port
         self._migration_cost_ratio_p2p = migration_cost_ratio_p2p
+        # p2p_nosidecar: kv_source must carry vLLM's OWN P2P-tier listener port
+        # (p2p_direct_port, default 5710 = vllm.envs.VLLM_P2P_SIDE_CHANNEL_PORT's
+        # own default) instead of p2p_connector_port (7777, sidecar-only, meaningless
+        # once WaveAdmissionLLMClient talks to vLLM directly - see p2p_replica.py's
+        # _generate_direct() docstring for the still-unconfirmed port assumption).
+        self._p2p_nosidecar = p2p_nosidecar
+        self._p2p_direct_port = p2p_direct_port
 
         self._used: dict[str, float] = {r: 0.0 for r in replicas}
         self._estimator = GrowthEstimator(
@@ -204,10 +213,10 @@ class AdmissionLedger:
         logger.info(
             "[AdmissionLedger] %d replicas, budget=%.0f tok/replica, wave1_size=%d, "
             "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f, "
-            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f",
+            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f, p2p_nosidecar=%s, p2p_direct_port=%d",
             len(replicas), budget_tokens_per_replica, wave1_size, allow_reactive_migration,
             reserve_mode, reserve_z, migration_cost_ratio,
-            p2p_kv_available, migration_cost_ratio_p2p,
+            p2p_kv_available, migration_cost_ratio_p2p, p2p_nosidecar, p2p_direct_port,
         )
 
     def _reserve(self, replica: str) -> float:
@@ -361,7 +370,8 @@ class AdmissionLedger:
                 kv_source = None
                 if self._p2p_kv_available:
                     resident_host = resident.rsplit(":", 1)[0]
-                    kv_source = f"{resident_host}:{self._p2p_connector_port}"
+                    port = self._p2p_direct_port if self._p2p_nosidecar else self._p2p_connector_port
+                    kv_source = f"{resident_host}:{port}"
                 logger.info(
                     "[AdmissionLedger] migrated %s: %s -> %s at turn %d "
                     "(deficit %.0f >= %.2fx migration cost %.0f, kv_source=%s)",

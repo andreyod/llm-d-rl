@@ -145,6 +145,22 @@ case "$MODE" in
     # real-cluster tunables found for plain wave-admission (HANDOVER.md
     # section I.7: -4.5%/-7.3% vs native at 64K/96K) - reused here as the
     # starting point now that migration itself is far cheaper.
+    #
+    # !!! KNOWN vLLM BUG - READ BEFORE RUNNING (found 2026-08-10) !!!
+    # The P2P secondary tier DEADLOCKS verl's engine sleep(): the run finishes
+    # engine init (last line "Capturing CUDA graphs (FULL): 100%") and then goes
+    # silent forever - GPUs pinned at full allocation, 0% utilization, no reqlog
+    # rows. py-spy shows all N rollout actors stuck in their `.sleep` method
+    # (visible in plain `ps` as "ray::P2PVLLMHttpServer.sleep") while the
+    # EngineCore processes are healthy and idle. The same config WITHOUT
+    # spec_name (CPU-only tier) sleeps fine, so the P2P tier is the trigger.
+    # Workaround for benchmarking: pass
+    #   EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
+    # which makes verl's sleep() return immediately (vllm_async_server.py's
+    # `if ... or not self.config.free_cache_engine: return`). NOT set here on
+    # purpose: it changes memory behaviour, so applying it to only the p2p arm
+    # of an A/B would bias the comparison - pass it to EVERY arm or none. Also
+    # not a fix for real TRAINING, which needs sleep/wake for weight sync.
     DEFAULT_NAME="qwen3_4b_grpo_waveadmissionp2p_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
@@ -233,6 +249,11 @@ case "$MODE" in
     # remote_kv_source is a permissive dict[str, Any], so a correctly-shaped source
     # on a config without these keys is dropped with no error, no log and no metric.
     # Matches llm-d/llm-d PR #2067's reference patch-vllm.yaml verbatim.
+    #
+    # Enabling the P2P tier also triggers the sleep() deadlock described in the
+    # wave-admission-p2p block above - the same
+    # EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
+    # workaround applies here, with the same "apply to every arm or none" caveat.
     P2P_ENGINE_HYDRA="
       +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \

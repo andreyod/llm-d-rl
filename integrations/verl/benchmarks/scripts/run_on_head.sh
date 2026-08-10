@@ -64,6 +64,15 @@ else
   echo "WARNING: no workload folder at $WLDIR - run_test.sh will error on the pod for --task $TASK" >&2
 fi
 
+# Ship the helper scripts run_test.sh calls on the pod (it falls back to /tmp/utils
+# when run from /tmp/run_test.sh). Currently just the DCA config patch, which must
+# run before vLLM loads a Qwen 1M-context checkpoint.
+if [ -d "$SCRIPT_DIR/utils" ]; then
+  echo "==> copying scripts/utils to $HEAD:/tmp/utils"
+  kubectl exec -n "$NS" "$HEAD" -- mkdir -p /tmp/utils
+  kubectl cp "$SCRIPT_DIR/utils/strip_dca_config.py" "$NS/$HEAD:/tmp/utils/strip_dca_config.py"
+fi
+
 if [ "$FG" -eq 1 ]; then
   echo "==> running attached (foreground): run_test.sh ${PASS[*]}"
   exec kubectl exec -it -n "$NS" "$HEAD" -- bash /tmp/run_test.sh "${PASS[@]}"

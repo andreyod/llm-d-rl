@@ -28,6 +28,20 @@
 # NOT LIVE-VALIDATED as of this writing - see _generate_direct()'s docstring for
 # the specific unconfirmed assumption (which port a peer's P2P listener is
 # actually reachable on).
+#
+# IMPORTANT (2026-08-10): the sidecar path can only ever pull from rank 0 in this
+# repo's topology (N replicas sharing one pod/network namespace) - the sidecar
+# advertises a single flat P2P port while vLLM must bind rank r at base+r. See
+# _launch_sidecar()'s comment for the full reasoning and why the sidecar's own
+# --data-parallel-size rank-decoding mode cannot be used here. VERL_P2P_NOSIDECAR
+# is the only path in this repo that can address every rank correctly.
+#
+# Both paths ALSO require kv_connector_extra_config to set
+# spec_name=TieringOffloadingSpec and secondary_tiers=[{type:p2p}] (run_test.sh
+# sets both for --mode epp-p2p and --mode wave-admission-p2p). Without them vLLM
+# builds a CPU-only offloading spec, no P2P tier exists, and any
+# kv_transfer_params.remote_kv_source is discarded silently - no error, no log,
+# no metric. Every P2P run in this repo before 2026-08-10 was in that state.
 from __future__ import annotations
 
 import logging
@@ -68,16 +82,27 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         # llm-d reference guide's one-pod-per-replica topology, where distinct
         # pod IPs make a single shared port harmless) - without a per-replica
         # offset every replica's listener would collide on the same port.
-        # admission.py encodes this SAME base+rank scheme into kv_source, and
-        # the sidecar's own --data-parallel-size flag (set in _launch_sidecar
-        # below) makes its p2pPortFor() decode that encoding back correctly -
-        # all three must agree or the pull silently targets the wrong port.
-        p2p_port = _DEFAULT_P2P_CONNECTOR_PORT + self.replica_rank
+        # admission.py encodes this SAME base+rank scheme into kv_source, so the
+        # two agree on the VERL_P2P_NOSIDECAR path. The SIDECAR path cannot be
+        # made to agree - see _launch_sidecar()'s warning for why (it advertises
+        # a flat port, and its rank-decoding mode is unusable in this topology).
+        p2p_port = self._p2p_listener_port()
         os.environ["VLLM_P2P_SIDE_CHANNEL_HOST"] = self._server_address
         os.environ["VLLM_P2P_SIDE_CHANNEL_PORT"] = str(p2p_port)
         await super().launch_server(
             master_address=master_address, master_port=master_port, dp_rpc_port=dp_rpc_port,
         )
+
+    def _p2p_listener_port(self) -> int:
+        """The port vLLM's own P2P tier binds on THIS replica.
+
+        Per-replica offset is mandatory, not a choice: every replica here is an
+        independent engine process inside ONE pod/network namespace, so a single
+        flat port cannot be bound more than once. (The llm-d reference guide's
+        one-pod-per-replica topology has a distinct pod IP per replica, which is
+        why a flat port is fine there and why nothing upstream needs this.)
+        """
+        return _DEFAULT_P2P_CONNECTOR_PORT + self.replica_rank
 
     @staticmethod
     def _nosidecar() -> bool:
@@ -103,19 +128,45 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         vllm_port = self._server_port
         self._sidecar_port = _find_free_port()
         p2p_port = int(os.environ.get("VERL_P2P_CONNECTOR_PORT", _DEFAULT_P2P_CONNECTOR_PORT))
-        # NOTE: the sidecar's own rank-offset logic (p2pPortFor(), --data-parallel-size)
-        # is NOT used here - confirmed via its source (connector_p2p.go/proxy.go)
-        # that it derives a target's rank from (target_port - THIS sidecar's own
-        # --port), assuming --port is IDENTICAL and deterministic across every
-        # replica's sidecar (true when each replica is its own pod, per the
-        # llm-d reference guide's one-pod-per-replica topology; false here,
-        # where _sidecar_port above is a random per-replica free port). Forcing
-        # that scheme to work for our multi-replica-per-node topology would risk
-        # breaking the working sidecar-mediated path for everyone. The
-        # per-replica-rank P2P port offset (see launch_server() above) is
-        # instead only exercised via the VERL_P2P_NOSIDECAR path, which builds
-        # kv_transfer_params directly and never goes through this rank-math at
-        # all - see admission.py's _p2p_direct_port handling.
+        # KNOWN, UNFIXABLE-FROM-HERE LIMITATION of the sidecar path in this
+        # topology: --p2p-connector-port is a single FLAT value that the sidecar
+        # injects as remote_port for every P2P source it is asked about, while
+        # vLLM necessarily binds rank r at p2p_port+r here (see
+        # _p2p_listener_port()). So a pull whose true source is rank s>0 is told
+        # to dial rank 0's tier, where it misses and silently falls back to a
+        # full recompute. Only rank 0 can actually serve a sidecar-mediated pull.
+        #
+        # The sidecar DOES have rank-decoding logic, and it is unusable here.
+        # Read from its source (pkg/sidecar/proxy/{connector_p2p,data_parallel,
+        # proxy}.go): p2pPortFor() returns the flat base unless
+        # --data-parallel-size > 1, in which case it returns
+        # base + (target_sidecar_port - dpBasePort) where dpBasePort is THIS
+        # sidecar's own --port. That mode assumes ONE sidecar per pod which
+        # clones itself across contiguous ports (startDataParallel() binds
+        # --port+1 .. --port+N-1 and proxies clone r to vLLM port
+        # <vllm-port>+r). Two hard mismatches with this repo: (1) we run N
+        # SEPARATE sidecars, one per replica, so passing --data-parallel-size=N
+        # would make every one of them spawn N-1 clones and collide on the same
+        # ports; (2) that mode requires CONTIGUOUS vLLM ports, but _server_port
+        # is assigned per replica by verl's own vLLMHttpServer, not by us.
+        # Adopting it would mean one sidecar owning all N replicas plus taking
+        # over verl's port assignment - a restructure of the shared PD-derived
+        # launch path, not a flag.
+        #
+        # Practical consequence: use VERL_P2P_NOSIDECAR for any run that needs
+        # correct per-rank pulls. That path builds kv_transfer_params itself with
+        # the true source's base+rank port (admission.py's _p2p_direct_port) and
+        # never consults this rank-math at all.
+        logger.warning(
+            "P2P sidecar mode on replica %s: this sidecar will advertise a FLAT "
+            "remote_port=%s for every P2P source, but vLLM binds rank r at %s+r "
+            "in this shared-network-namespace topology (this replica: %s). Only "
+            "rank 0 can serve a sidecar-mediated pull; a source on any other "
+            "rank misses and silently recomputes. Set VERL_P2P_NOSIDECAR=enabled "
+            "for correct per-rank pulls.",
+            self.replica_rank, p2p_port, _DEFAULT_P2P_CONNECTOR_PORT,
+            self._p2p_listener_port(),
+        )
         cmd = [
             _SIDECAR_BINARY,
             f"--port={self._sidecar_port}",

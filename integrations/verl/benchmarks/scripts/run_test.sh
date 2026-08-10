@@ -223,13 +223,25 @@ case "$MODE" in
     # comfortably inside this cluster's node RAM; not tuned/sized from measured
     # KV capacity, just a safe smoke-test default. Override via
     # P2P_CPU_BYTES_TO_USE for a real sizing pass.
+    #
+    # spec_name + secondary_tiers: WITHOUT BOTH OF THESE THERE IS NO P2P TIER AT
+    # ALL, and the omission is silent. vllm/v1/kv_offload/factory.py's create_spec()
+    # defaults spec_name to "CPUOffloadingSpec" (CPU tier only); the P2P secondary-tier
+    # manager - the only code in vLLM that parses kv_transfer_params.remote_kv_source
+    # (vllm/v1/kv_offload/tiering/p2p/manager.py's _parse_source) - is built only by
+    # TieringOffloadingSpec.get_manager() iterating extra_config["secondary_tiers"].
+    # remote_kv_source is a permissive dict[str, Any], so a correctly-shaped source
+    # on a config without these keys is dropped with no error, no log and no metric.
+    # Matches llm-d/llm-d PR #2067's reference patch-vllm.yaml verbatim.
     P2P_ENGINE_HYDRA="
       +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296}"
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.spec_name=TieringOffloadingSpec \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.secondary_tiers=[{type:p2p}]"
     ;;
 
   epp-sglang)
@@ -350,6 +362,34 @@ source "$TASK_ENV"
 
 TRAIN_RESOLVED=${TRAIN_FILE:-$DEF_TRAIN}
 TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}
+MODEL_RESOLVED=${MODEL_PATH:-$DEF_MODEL}
+
+# -- checkpoint compatibility patch --------------------------------------------
+# Qwen 1M-context checkpoints (e.g. Qwen2.5-7B-Instruct-1M) carry
+# dual_chunk_attention_config, which this vLLM nightly cannot honour - it has no
+# dual-chunk attention backend registered, so the engine dies in
+# FlashAttentionImpl.__init__() on an unsupported layer_idx kwarg before loading
+# the model. Strip the key (idempotent no-op when absent, keeps a .dca-backup);
+# harmless for this repo's 64K-98K benchmarks, which never reach the 262144
+# threshold where DCA applies. See utils/strip_dca_config.py for the full
+# rationale. Set SKIP_DCA_STRIP=1 to leave the checkpoint untouched.
+# Resolved like WORKLOADS_DIR above: repo layout first, else /tmp/utils (where
+# run_on_head.sh ships it alongside /tmp/run_test.sh).
+DCA_STRIP=""
+for cand in "$SCRIPT_DIR/utils/strip_dca_config.py" /tmp/utils/strip_dca_config.py; do
+  [[ -f "$cand" ]] && DCA_STRIP="$cand" && break
+done
+if [[ "${SKIP_DCA_STRIP:-0}" != "1" && -n "$MODEL_RESOLVED" ]]; then
+  if [[ -n "$DCA_STRIP" ]]; then
+    python3 "$DCA_STRIP" "$MODEL_RESOLVED" || {
+      echo "ERROR: strip_dca_config.py failed for $MODEL_RESOLVED"
+      exit 1
+    }
+  else
+    echo "WARNING: strip_dca_config.py not found - skipping the DCA compatibility patch." >&2
+    echo "         A Qwen 1M-context checkpoint will crash vLLM on an unsupported layer_idx kwarg." >&2
+  fi
+fi
 
 # Optional extra hydra overrides, appended LAST so they win over the per-task defaults
 # (e.g. raise ppo/log_prob token budgets for a bigger max_prompt). Space-separated;
@@ -364,7 +404,7 @@ cd /tmp/verl/verl/examples/grpo_trainer
 # them to the conversation count, or the dataloader cannot fill a step.
 ROLLOUT_N=$N ROLLOUT_TP=$TP NGPUS_PER_NODE=8 \
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-256} PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-128} \
-MODEL_PATH=${MODEL_PATH:-$DEF_MODEL} \
+MODEL_PATH=$MODEL_RESOLVED \
 TRAIN_FILE=$TRAIN_RESOLVED \
 TEST_FILE=$TEST_RESOLVED \
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-$DEF_MAXP} MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-$DEF_MAXR} \

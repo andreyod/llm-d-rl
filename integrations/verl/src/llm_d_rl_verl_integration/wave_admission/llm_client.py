@@ -171,4 +171,13 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 # by diffing `endpoint` across turns - recorded directly here
                 # so a future run's reqlog alone settles it, no ambiguity.
                 "kv_source": kv_source,
+                # Only meaningful in p2p_nosidecar mode: vLLM's own echo of
+                # kv_transfer_params from the response (see
+                # P2PVLLMHttpServer._generate_direct()). A live-validation
+                # signal for that unconfirmed path - None either means no
+                # migration happened this turn, or (if kv_source was set) that
+                # vLLM silently didn't process the pull.
+                "kv_transfer_params_response": (
+                    getattr(out, "extra_fields", None) or {}
+                ).get("kv_transfer_params_response") if out is not None else None,
             })

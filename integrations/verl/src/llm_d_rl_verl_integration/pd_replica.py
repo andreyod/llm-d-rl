@@ -228,7 +228,20 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
             token_ids=token_ids,
             stop_reason=finish_reason,
             log_probs=log_probs,
-            extra_fields={"global_steps": self.global_steps},
+            extra_fields={
+                "global_steps": self.global_steps,
+                # vLLM's own connector-agnostic ground truth for whether this
+                # turn's prompt was actually served from cache (local prefix
+                # reuse OR any real cross-replica pull) vs fully recomputed -
+                # sourced from vllm's engine_core_output.prefill_stats.
+                # num_cached_tokens (see output_processor.py), NOT anything
+                # connector-specific. Requires
+                # engine_kwargs.vllm.enable_prompt_tokens_details=true (already
+                # set for every llm-d mode). None if usage wasn't returned.
+                "cached_tokens": (
+                    (data.get("usage") or {}).get("prompt_tokens_details") or {}
+                ).get("cached_tokens"),
+            },
         )
 
 

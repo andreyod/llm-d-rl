@@ -202,6 +202,12 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
                 # Echoed back by vLLM verbatim when the pull actually happened -
                 # the intended live-validation signal for this unconfirmed path.
                 "kv_transfer_params_response": data.get("kv_transfer_params"),
+                # Connector-agnostic ground truth (see pd_replica.py's
+                # generate() for the same field) - checks this independent of
+                # the kv_transfer_params echo above.
+                "cached_tokens": (
+                    (data.get("usage") or {}).get("prompt_tokens_details") or {}
+                ).get("cached_tokens"),
             },
         )
 

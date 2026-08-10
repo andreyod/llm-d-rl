@@ -180,4 +180,13 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 "kv_transfer_params_response": (
                     getattr(out, "extra_fields", None) or {}
                 ).get("kv_transfer_params_response") if out is not None else None,
+                # Connector-agnostic ground truth (vLLM's own
+                # engine_core_output.prefill_stats.num_cached_tokens, via
+                # pd_replica.py/p2p_replica.py's generate()) - whether THIS
+                # turn's prompt was actually served from cache vs recomputed,
+                # independent of any connector-specific echo/header. The
+                # decisive check for whether a migration's KV pull is real.
+                "cached_tokens": (
+                    getattr(out, "extra_fields", None) or {}
+                ).get("cached_tokens") if out is not None else None,
             })

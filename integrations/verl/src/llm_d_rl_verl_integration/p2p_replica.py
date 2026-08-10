@@ -253,6 +253,17 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         }
         if kv_transfer_params:
             body["kv_transfer_params"] = kv_transfer_params
+            # Diagnostic for the "nosidecar pulls silently do nothing" problem:
+            # proves whether the request LEAVES here with a well-formed source.
+            # WARNING level on purpose - logger.info() is filtered out inside the
+            # Ray actor, so an info-level line here would never be visible. Gated
+            # by an env var so normal runs stay quiet; only fires on migrated
+            # turns anyway (a few dozen per run).
+            if os.environ.get("VERL_P2P_DEBUG_BODY"):
+                logger.warning(
+                    "P2P_DEBUG_BODY replica=%s url=%s kv_transfer_params=%s",
+                    self.replica_rank, url, kv_transfer_params,
+                )
 
         session = await self._get_sidecar_session()  # a plain shared aiohttp session, not sidecar-specific despite the name
         try:

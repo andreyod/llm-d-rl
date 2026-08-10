@@ -166,8 +166,18 @@ case "$MODE" in
     # VERL_P2P_NOSIDECAR must reach the Ray actor process via runtime_env
     # (os.environ inside the worker, not this script's own shell env).
     if [[ "${WAVE_ADMISSION_P2P_NOSIDECAR:-false}" == "true" ]]; then
+      # NOTE: "enabled", not "true" - Hydra/OmegaConf's CLI override parser
+      # infers bare "true"/"false" as native Python bool, but Ray's
+      # runtime_env.env_vars requires every value to be a plain str (a bool
+      # here raises "TypeError: runtime_env['env_vars'] must be of type
+      # Dict[str, str]" at ray.init() time, found live). "enabled" has no
+      # special YAML/OmegaConf scalar meaning, so it always parses as a str.
+      # actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true
+      # (a normal, non-env-var hydra key) has no such issue - that one is
+      # read by OmegaConf.to_container() as a real bool, which is what
+      # agent_loop_manager.py's bool(_custom_get(...)) expects.
       P2P_ENGINE_HYDRA="${P2P_ENGINE_HYDRA} \
-      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_NOSIDECAR=true \
+      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_NOSIDECAR=enabled \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_direct_port=${WAVE_ADMISSION_P2P_DIRECT_PORT:-5710}"
     fi

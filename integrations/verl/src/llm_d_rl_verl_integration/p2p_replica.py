@@ -56,7 +56,14 @@ _DEFAULT_P2P_CONNECTOR_PORT = 7777
 class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
     @staticmethod
     def _nosidecar() -> bool:
-        return os.environ.get("VERL_P2P_NOSIDECAR", "false").strip().lower() in ("1", "true", "yes")
+        # "enabled" (not "true") is what run_test.sh's WAVE_ADMISSION_P2P_NOSIDECAR
+        # toggle actually sets, via a Ray runtime_env env var - Hydra/OmegaConf's
+        # CLI override parser infers bare "true" as a native bool, which Ray's
+        # runtime_env.env_vars (requires plain str values) rejects at ray.init()
+        # time. "1"/"true"/"yes" still accepted for direct (non-hydra-routed) use.
+        return os.environ.get("VERL_P2P_NOSIDECAR", "false").strip().lower() in (
+            "1", "true", "yes", "enabled",
+        )
 
     def _launch_sidecar(self) -> None:
         if self._nosidecar():

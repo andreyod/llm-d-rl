@@ -145,4 +145,10 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 "output_tokens": ntok,
                 "pick_s": round(t_pick - t0, 5),
                 "gen_s": round(t_end - t_pick, 5),
+                # Ground truth for whether THIS request stamped
+                # x-kv-cache-source-host-port (i.e. the ledger decided to
+                # migrate it here). Previously only reconstructible indirectly
+                # by diffing `endpoint` across turns - recorded directly here
+                # so a future run's reqlog alone settles it, no ambiguity.
+                "kv_source": kv_source,
             })

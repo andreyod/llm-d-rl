@@ -161,7 +161,7 @@ class AdmissionLedger:
         p2p_connector_port: int = 7777,
         migration_cost_ratio_p2p: float = 0.0,
         p2p_nosidecar: bool = False,
-        p2p_direct_port: int = 5710,
+        p2p_direct_port: int = 7777,
     ):
         self._replicas = list(replicas)
         self._budget = budget_tokens_per_replica
@@ -184,11 +184,18 @@ class AdmissionLedger:
         self._p2p_kv_available = p2p_kv_available
         self._p2p_connector_port = p2p_connector_port
         self._migration_cost_ratio_p2p = migration_cost_ratio_p2p
-        # p2p_nosidecar: kv_source must carry vLLM's OWN P2P-tier listener port
-        # (p2p_direct_port, default 5710 = vllm.envs.VLLM_P2P_SIDE_CHANNEL_PORT's
-        # own default) instead of p2p_connector_port (7777, sidecar-only, meaningless
-        # once WaveAdmissionLLMClient talks to vLLM directly - see p2p_replica.py's
-        # _generate_direct() docstring for the still-unconfirmed port assumption).
+        # p2p_nosidecar: kv_source must carry vLLM's OWN P2P-tier listener port,
+        # which p2p_replica.py's launch_server() sets to p2p_direct_port (base,
+        # default 7777, matching the llm-d reference guide's convention - NOT
+        # vllm.envs.VLLM_P2P_SIDE_CHANNEL_PORT's own unrelated default of 5710)
+        # PLUS that replica's own rank (self._replicas.index(...) below) - every
+        # replica here shares one node/network-namespace (unlike the reference
+        # guide's one-pod-per-replica topology), so a flat, unoffset port would
+        # collide across all of them. p2p_connector_port (also 7777 by default,
+        # a DIFFERENT, sidecar-only setting) is used instead when going through
+        # the sidecar, which has its own separate, incompatible rank-offset
+        # scheme - see p2p_replica.py's _launch_sidecar() for why that one is
+        # deliberately NOT engaged.
         self._p2p_nosidecar = p2p_nosidecar
         self._p2p_direct_port = p2p_direct_port
 
@@ -370,7 +377,15 @@ class AdmissionLedger:
                 kv_source = None
                 if self._p2p_kv_available:
                     resident_host = resident.rsplit(":", 1)[0]
-                    port = self._p2p_direct_port if self._p2p_nosidecar else self._p2p_connector_port
+                    if self._p2p_nosidecar:
+                        # Must match p2p_replica.py's launch_server(): vLLM's own
+                        # P2P listener on `resident` binds to p2p_direct_port +
+                        # resident's own rank (its index in the same ordered
+                        # replicas list every AgentLoopManager builds
+                        # server_addresses from - see agent_loop_manager.py).
+                        port = self._p2p_direct_port + self._replicas.index(resident)
+                    else:
+                        port = self._p2p_connector_port
                     kv_source = f"{resident_host}:{port}"
                 logger.info(
                     "[AdmissionLedger] migrated %s: %s -> %s at turn %d "

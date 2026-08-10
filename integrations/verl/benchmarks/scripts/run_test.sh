@@ -157,6 +157,8 @@ case "$MODE" in
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.spec_name=TieringOffloadingSpec \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.secondary_tiers=[{type:p2p}] \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_kv_available=true \
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_mode=size \
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_z=1.5 \
@@ -179,7 +181,7 @@ case "$MODE" in
       P2P_ENGINE_HYDRA="${P2P_ENGINE_HYDRA} \
       +ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_NOSIDECAR=enabled \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true \
-      +actor_rollout_ref.rollout.custom.wave_admission_p2p_direct_port=${WAVE_ADMISSION_P2P_DIRECT_PORT:-5710}"
+      +actor_rollout_ref.rollout.custom.wave_admission_p2p_direct_port=${WAVE_ADMISSION_P2P_DIRECT_PORT:-7777}"
     fi
     ;;
 

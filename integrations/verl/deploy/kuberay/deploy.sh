@@ -11,17 +11,35 @@
 #   ./deploy.sh delete           # delete the cluster (leaves the ConfigMap)
 #   ./deploy.sh configmap        # (re)create the ConfigMap only
 #   ./deploy.sh render           # print the rendered manifest to stdout (no kubectl)
-#   ./deploy.sh apply-sglang     # create ConfigMap + apply the SGLang variant cluster
-#   ./deploy.sh delete-sglang    # delete the SGLang variant cluster (leaves the ConfigMap)
-#   ./deploy.sh render-sglang    # print the rendered SGLang variant manifest (no kubectl)
 #   ./deploy.sh retriever        # apply the BM25 searchr1 retriever (Deployment+Service)
 #   ./deploy.sh retriever-delete # delete the retriever
 #   ./deploy.sh render-retriever # print the rendered retriever manifest (no kubectl)
 #
+# Rollout engine (one manifest, one cluster name, per-engine values from deploy.env):
+#   ./deploy.sh apply                     # vLLM (default)
+#   ./deploy.sh apply --engine sglang     # SGLang
+#   ./deploy.sh render --engine sglang    # inspect before applying
+#
+# The two engines are deliberately mutually exclusive within a namespace: they
+# render to the same RayCluster name, so applying one replaces the other. Every
+# script here resolves pods with `-l ray.io/node-type=head` + `items[0]` (see
+# benchmarks/scripts/run_on_head.sh, utils/push-epp.sh, rl_orchestrate.sh), which
+# cannot tell two clusters apart - two live clusters would mean silently
+# benchmarking, or pushing an EPP binary into, whichever one came back first.
+#
 # Requires: envsubst (GNU gettext) and kubectl on PATH.
 set -euo pipefail
 
-ACTION="${1:-apply}"
+ACTION="apply"
+ENGINE="vllm"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --engine) ENGINE="${2:?--engine needs a value}"; shift 2 ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    *) ACTION="$1"; shift ;;
+  esac
+done
+
 cd "$(dirname "$0")"
 
 # deploy.env provides the IMG_* refs (envsubst reads them from the environment).
@@ -34,18 +52,30 @@ set +a
 # no default: :? fails fast (before any kubectl) on empty OR unset.
 : "${NAMESPACE:?not set - export NAMESPACE=<your-namespace>}"
 
-render() {
-  # Explicit var list keeps envsubst from touching the container-runtime
-  # $EPP_IMAGE / $ENVOY_IMAGE in the crane args and the shell $ in postStart.
-  envsubst '${NAMESPACE} ${IMG_VERL} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY} ${IMG_SIDECAR}' \
-    < ray-cluster.yaml.tmpl
+# Resolve the per-engine column from deploy.env into the names the manifest uses.
+# Fails fast on an engine with no column rather than rendering blank values into a
+# manifest that would then fail confusingly at pod start.
+select_engine() {
+  local img py cpus alloc
+  img="ENGINE_${ENGINE}_IMAGE"; py="ENGINE_${ENGINE}_PY_MODULE"
+  cpus="ENGINE_${ENGINE}_HEAD_NUM_CPUS"; alloc="ENGINE_${ENGINE}_ALLOC_CONF"
+  if [[ -z "${!img:-}" ]]; then
+    echo "ERROR: unknown engine '${ENGINE}' - add an ENGINE_${ENGINE}_* block to deploy.env" >&2
+    exit 2
+  fi
+  export IMG_TRAINER="${!img}"
+  export ENGINE_PY_MODULE="${!py}"
+  export ENGINE_HEAD_NUM_CPUS="${!cpus}"
+  # May legitimately be empty (SGLang), so no :- guard and no emptiness check.
+  export ENGINE_ALLOC_CONF="${!alloc-}"
 }
 
-render_sglang() {
-  # SGLang variant: no sidecar (no PD/P2P for SGLang in this mode), scoped var
-  # list same rationale as render() above.
-  envsubst '${NAMESPACE} ${IMG_VERL_SGLANG} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY}' \
-    < ray-cluster-sglang.yaml.tmpl
+render() {
+  select_engine
+  # Explicit var list keeps envsubst from touching the container-runtime
+  # $EPP_IMAGE / $ENVOY_IMAGE in the crane args and the shell $ in postStart.
+  envsubst '${NAMESPACE} ${IMG_TRAINER} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY} ${IMG_SIDECAR} ${ENGINE_PY_MODULE} ${ENGINE_HEAD_NUM_CPUS} ${ENGINE_ALLOC_CONF}' \
+    < ray-cluster.yaml.tmpl
 }
 
 render_retriever() {
@@ -78,11 +108,12 @@ case "$ACTION" in
   configmap)         create_configmap ;;
   apply)             create_configmap; render | kubectl apply -f - ;;
   delete)            render | kubectl delete -f - ;;
-  render-sglang)     render_sglang ;;
-  apply-sglang)      create_configmap; render_sglang | kubectl apply -f - ;;
-  delete-sglang)     render_sglang | kubectl delete -f - ;;
   retriever)         render_retriever | kubectl apply -f - ;;
   retriever-delete)  render_retriever | kubectl delete -f - ;;
   render-retriever)  render_retriever ;;
-  *) echo "Unknown action: $ACTION (use apply | delete | configmap | render | apply-sglang | delete-sglang | render-sglang | retriever | retriever-delete | render-retriever)" >&2; exit 2 ;;
+  apply-sglang|delete-sglang|render-sglang)
+    echo "ERROR: '$ACTION' is gone - one manifest now serves both engines." >&2
+    echo "       Use: ./deploy.sh ${ACTION%-sglang} --engine sglang" >&2
+    exit 2 ;;
+  *) echo "Unknown action: $ACTION (use apply | delete | configmap | render | retriever | retriever-delete | render-retriever, with optional --engine vllm|sglang)" >&2; exit 2 ;;
 esac

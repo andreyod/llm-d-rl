@@ -433,18 +433,8 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            # 256Gi (was 64Gi): /dev/shm is where OffloadingConnector mmaps its
-            # CPU KV tier (/dev/shm/vllm_offload_*.mmap), so it - NOT host RAM -
-            # is the real ceiling on cpu_bytes_to_use x n_replicas. At 64Gi the
-            # 8 replicas could only be given 4-7 GiB each, i.e. barely ONE 64K
-            # conversation's KV (57344 B/token x 64000 = 3.42 GiB), so offloaded
-            # blocks were evicted before any peer could pull them - measured as a
-            # 3-6% P2P hit rate. llm-d PR #2067's reference config sizes this
-            # tier at 88 GiB per replica ("at least as large as the per-pod GPU
-            # KV cache"). 256Gi leaves 8x28GiB tiers (~8 conversations each)
-            # while staying inside the pod's 512G memory limit - note a
-            # medium:Memory emptyDir counts against that limit, so shm and
-            # process memory share the same 512G budget.
+            # /dev/shm holds OffloadingConnector's CPU KV tier, so this caps
+            # cpu_bytes_to_use x n_replicas. Counts against the pod memory limit.
             sizeLimit: "256Gi"
         - name: llmd-epp-configs
           configMap:

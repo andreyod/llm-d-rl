@@ -160,10 +160,9 @@ class AdmissionLedger:
         reserve_z: float = 0.0,
         migration_cost_ratio: float = 1.0,
         p2p_kv_available: bool = False,
-        p2p_connector_port: int = 7777,
+        p2p_port: int = 7777,
         migration_cost_ratio_p2p: float = 0.0,
         p2p_nosidecar: bool = False,
-        p2p_direct_port: int = 7777,
     ):
         self._replicas = list(replicas)
         self._budget = budget_tokens_per_replica
@@ -172,30 +171,12 @@ class AdmissionLedger:
         self._poll_interval_s = poll_interval_s
         self._allow_reactive_migration = allow_reactive_migration
         self._migration_cost_ratio = migration_cost_ratio
-        # A migration is only "expensive" (full context_size recompute) when
-        # there is no cheap way to move the KV. With the P2P KV-cache-sharing
-        # rollout backend (P2PVLLMHttpServer / OffloadingConnector, see
-        # p2p_replica.py), every replica offloads its KV to a CPU tier every
-        # other replica can pull from - so once we KNOW the exact source
-        # replica (our own sticky `_resident` map, not EPP's p2p-source-producer
-        # discovery), the migration cost collapses toward a P2P pull instead of
-        # a full re-prefill. migration_cost_ratio_p2p default 0.0 is a
-        # deliberate benchmarking assumption (per user instruction) to measure
-        # the UPPER BOUND of what breaking session-affinity is worth once
-        # cross-GPU KV transfer is ~free - not a measured real transfer cost.
+        # With P2P available a migration can pull the resident's KV instead of
+        # recomputing it, so migration_cost_ratio_p2p (default 0.0) applies.
         self._p2p_kv_available = p2p_kv_available
-        self._p2p_connector_port = p2p_connector_port
+        self._p2p_port = p2p_port
         self._migration_cost_ratio_p2p = migration_cost_ratio_p2p
-        # kv_source addresses the source replica by its own P2P loopback IP
-        # (p2p_addressing.p2p_listener_host) on a FLAT port - the same scheme for
-        # both the sidecar and nosidecar paths, since replicas are separated by
-        # IP rather than by port. p2p_direct_port (nosidecar) and
-        # p2p_connector_port (sidecar, must match the sidecar's own
-        # --p2p-connector-port) both default to 7777 and are normally equal; two
-        # keys are kept only so an operator can diverge them if a deployment
-        # ever needs to.
         self._p2p_nosidecar = p2p_nosidecar
-        self._p2p_direct_port = p2p_direct_port
 
         self._used: dict[str, float] = {r: 0.0 for r in replicas}
         self._estimator = GrowthEstimator(
@@ -218,10 +199,10 @@ class AdmissionLedger:
         logger.info(
             "[AdmissionLedger] %d replicas, budget=%.0f tok/replica, wave1_size=%d, "
             "allow_reactive_migration=%s, reserve_mode=%s, reserve_z=%.1f, migration_cost_ratio=%.1f, "
-            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f, p2p_nosidecar=%s, p2p_direct_port=%d",
+            "p2p_kv_available=%s, migration_cost_ratio_p2p=%.2f, p2p_nosidecar=%s, p2p_port=%d",
             len(replicas), budget_tokens_per_replica, wave1_size, allow_reactive_migration,
             reserve_mode, reserve_z, migration_cost_ratio,
-            p2p_kv_available, migration_cost_ratio_p2p, p2p_nosidecar, p2p_direct_port,
+            p2p_kv_available, migration_cost_ratio_p2p, p2p_nosidecar, p2p_port,
         )
 
     def _reserve(self, replica: str) -> float:
@@ -349,14 +330,8 @@ class AdmissionLedger:
         # requires the deficit to be at least as large as the full re-prefill
         # it would cost to relieve it.
         #
-        # When p2p_kv_available, the destination can PULL the resident's KV
-        # over the P2P tier instead of recomputing it (we know the exact
-        # source replica - our own `resident` var - so no discovery step is
-        # needed), so migration_cost_ratio_p2p (default 0.0, near-free) is
-        # used instead: the deficit threshold to justify migrating collapses
-        # toward "migrate whenever it doesn't fit and somewhere else does",
-        # the real-cluster analog of the simulator's cheap-transfer
-        # "online_lb" finding (see FINDINGS.md section D: -29% vs sticky).
+        # With p2p_kv_available the destination pulls instead of recomputing,
+        # so the cheaper migration_cost_ratio_p2p gate applies.
         effective_cost_ratio = (
             self._migration_cost_ratio_p2p if self._p2p_kv_available else self._migration_cost_ratio
         )
@@ -374,24 +349,13 @@ class AdmissionLedger:
                 self._book(request_id, target, turn_index, context_size)
                 kv_source = None
                 if self._p2p_kv_available:
-                    # Address the source replica by its own P2P loopback IP on a
-                    # FLAT port - identical for the sidecar and nosidecar paths,
-                    # which is the point of separating replicas by IP rather
-                    # than by port (see p2p_replica.p2p_listener_host()).
-                    #
-                    # The index must be the resident's rank: its position in the
-                    # same ordered replicas list every AgentLoopManager builds
-                    # server_addresses from (see agent_loop_manager.py), which is
-                    # also the replica_rank p2p_replica.py binds with. Note we
-                    # deliberately IGNORE resident's own host:port here - that is
-                    # its HTTP dispatch address (node IP + sidecar/vLLM port),
-                    # a different namespace from the P2P control socket.
-                    port = (
-                        self._p2p_direct_port
-                        if self._p2p_nosidecar
-                        else self._p2p_connector_port
+                    # The source's P2P control socket, addressed by its own
+                    # loopback IP (index = the resident's replica_rank), NOT its
+                    # HTTP dispatch address.
+                    kv_source = (
+                        f"{p2p_listener_host(self._replicas.index(resident))}"
+                        f":{self._p2p_port}"
                     )
-                    kv_source = f"{p2p_listener_host(self._replicas.index(resident))}:{port}"
                 logger.info(
                     "[AdmissionLedger] migrated %s: %s -> %s at turn %d "
                     "(deficit %.0f >= %.2fx migration cost %.0f, kv_source=%s)",

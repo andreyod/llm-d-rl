@@ -106,21 +106,12 @@ class WaveAdmissionLLMClient(LLMServerClient):
         if mm_processor_kwargs:
             multimodal_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
 
-        # Only set when the ledger just migrated this conversation onto a NEW
-        # replica with p2p_kv_available - names the replica the KV was
-        # previously resident on, so the destination's P2P sidecar
-        # (P2PVLLMHttpServer, --kv-connector=offloading) pulls it instead of
-        # recomputing from scratch. See admission.py's _continue_or_migrate.
-        # Only added to the call at all when set: the base (non-P2P)
-        # vLLMHttpServer.generate() used by plain wave-admission mode has no
-        # sidecar_headers/kv_transfer_params parameter, unlike
-        # PDDecodeVLLMHttpServer/P2PVLLMHttpServer's override.
+        # Set only on a migration with p2p_kv_available: names the replica the
+        # KV was resident on so the destination pulls it. Passed only when set -
+        # the non-P2P server's generate() has no such parameter.
         if kv_source:
             if self._p2p_nosidecar:
-                # Bypasses the sidecar entirely - see
-                # P2PVLLMHttpServer._generate_direct()'s docstring for the
-                # exact shape vLLM's own P2P manager expects, and the
-                # unconfirmed remote_port assumption.
+                # Shape expected by vLLM's P2P manager (_parse_source).
                 host, _, port = kv_source.rpartition(":")
                 kwargs["kv_transfer_params"] = {
                     "remote_kv_source": {
@@ -165,27 +156,13 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 "output_tokens": ntok,
                 "pick_s": round(t_pick - t0, 5),
                 "gen_s": round(t_end - t_pick, 5),
-                # Ground truth for whether THIS request stamped
-                # x-kv-cache-source-host-port (i.e. the ledger decided to
-                # migrate it here). Previously only reconstructible indirectly
-                # by diffing `endpoint` across turns - recorded directly here
-                # so a future run's reqlog alone settles it, no ambiguity.
+                # Non-null iff the ledger migrated this turn.
                 "kv_source": kv_source,
-                # Only meaningful in p2p_nosidecar mode: vLLM's own echo of
-                # kv_transfer_params from the response (see
-                # P2PVLLMHttpServer._generate_direct()). A live-validation
-                # signal for that unconfirmed path - None either means no
-                # migration happened this turn, or (if kv_source was set) that
-                # vLLM silently didn't process the pull.
+                # vLLM's echo of kv_transfer_params (p2p_nosidecar mode only).
                 "kv_transfer_params_response": (
                     getattr(out, "extra_fields", None) or {}
                 ).get("kv_transfer_params_response") if out is not None else None,
-                # Connector-agnostic ground truth (vLLM's own
-                # engine_core_output.prefill_stats.num_cached_tokens, via
-                # pd_replica.py/p2p_replica.py's generate()) - whether THIS
-                # turn's prompt was actually served from cache vs recomputed,
-                # independent of any connector-specific echo/header. The
-                # decisive check for whether a migration's KV pull is real.
+                # Connector-agnostic prefix-hit ground truth.
                 "cached_tokens": (
                     getattr(out, "extra_fields", None) or {}
                 ).get("cached_tokens") if out is not None else None,

@@ -3,13 +3,9 @@ import time, urllib.request, datetime
 import yaml
 OUT = os.environ.get("VLLM_SCRAPE_OUT", "/tmp/vllm_metrics.csv")
 EP  = os.environ.get("VLLM_SCRAPE_ENDPOINTS", "/tmp/epp-endpoints.yaml")
-# Rewrite every endpoint's host before scraping. Needed for VERL_P2P_NOSIDECAR
-# runs: there is no sidecar, so the endpoints file advertises vLLM's own port,
-# but PDDecodeVLLMHttpServer.launch_server() binds vLLM to 127.0.0.1 - so the
-# advertised <node_ip>:<vllm_port> is unreachable even from the pod itself, and
-# completely unreachable from the head pod where this normally runs. Run this
-# script ON THE WORKER pod with VLLM_SCRAPE_HOST=127.0.0.1 to scrape those.
-# Unset (the default) keeps the address exactly as advertised.
+# Rewrite each endpoint's host before scraping. Needed in nosidecar mode, where
+# vLLM binds 127.0.0.1: run this on the worker with VLLM_SCRAPE_HOST=127.0.0.1.
+# Unset keeps the advertised address.
 HOST_OVERRIDE = os.environ.get("VLLM_SCRAPE_HOST") or None
 WANT = [
     "vllm:num_requests_running",

@@ -64,6 +64,20 @@ ROLLOUT_NAME=""        # only epp-p2p sets this (registers a non-default rollout
 EXTERNAL_LIB=""        # only epp-p2p sets this (model.external_lib import hook)
 P2P_ENGINE_HYDRA=""    # only epp-p2p sets this (OffloadingConnector engine_kwargs)
 
+# -- shared P2P engine config (--mode epp-p2p and wave-admission-p2p) ----------
+# spec_name + secondary_tiers are BOTH mandatory or there is no P2P tier and
+# remote_kv_source is silently ignored. Size cpu_bytes_to_use >= the per-replica
+# GPU KV cache, capped by /dev/shm (see ray-cluster.yaml.tmpl's dshm sizeLimit).
+P2P_ENGINE_BASE="
+      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.spec_name=TieringOffloadingSpec \
+      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.secondary_tiers=[{type:p2p}]"
+
 case "$MODE" in
   native)
     DEFAULT_NAME="qwen3_4b_grpo_baseline_tp${TP}_n${N}_${STEPS}s"
@@ -128,153 +142,46 @@ case "$MODE" in
     ;;
 
   wave-admission-p2p)
-    # Wave-admission (same estimation-gated admission + reactive migration as
-    # plain wave-admission above), but on the P2P KV-cache-sharing rollout
-    # backend (rollout.name=vllm-llmd-p2p, same OffloadingConnector wiring as
-    # epp-p2p below) so a migration can PULL the resident's KV from its
-    # previous replica instead of recomputing it. AdmissionLedger already
-    # knows the exact source replica (our own sticky `_resident` map), so no
-    # EPP / p2p-source-producer discovery step is needed - WaveAdmissionLLMClient
-    # stamps x-kv-cache-source-host-port itself. custom.wave_admission_p2p_kv_available=true
-    # switches the migration-worth-it gate from migration_cost_ratio (full
-    # re-prefill, default 1.0) to migration_cost_ratio_p2p (default 0.0 - a
-    # deliberate benchmarking assumption that cross-GPU KV transfer is ~free,
-    # per the simulator's cheap-transfer "online_lb" finding, FINDINGS.md
-    # section D: -29% vs sticky, beating even full-lookahead offline
-    # placement). reserve_mode=size/reserve_z=1.5/max_wait_s=20 are the best
-    # real-cluster tunables found for plain wave-admission (HANDOVER.md
-    # section I.7: -4.5%/-7.3% vs native at 64K/96K) - reused here as the
-    # starting point now that migration itself is far cheaper.
-    #
-    # !!! KNOWN vLLM BUG - READ BEFORE RUNNING (found 2026-08-10) !!!
-    # The P2P secondary tier DEADLOCKS verl's engine sleep(): the run finishes
-    # engine init (last line "Capturing CUDA graphs (FULL): 100%") and then goes
-    # silent forever - GPUs pinned at full allocation, 0% utilization, no reqlog
-    # rows. py-spy shows all N rollout actors stuck in their `.sleep` method
-    # (visible in plain `ps` as "ray::P2PVLLMHttpServer.sleep") while the
-    # EngineCore processes are healthy and idle. The same config WITHOUT
-    # spec_name (CPU-only tier) sleeps fine, so the P2P tier is the trigger.
-    # Workaround for benchmarking: pass
-    #   EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
-    # which makes verl's sleep() return immediately (vllm_async_server.py's
-    # `if ... or not self.config.free_cache_engine: return`). NOT set here on
-    # purpose: it changes memory behaviour, so applying it to only the p2p arm
-    # of an A/B would bias the comparison - pass it to EVERY arm or none. Also
-    # not a fix for real TRAINING, which needs sleep/wake for weight sync.
+    # Wave-admission on the P2P KV-cache-sharing backend: a migration pulls the
+    # resident's KV instead of recomputing it. wave_admission_p2p_kv_available
+    # switches the migrate-worth-it gate to migration_cost_ratio_p2p (~free).
+    # NOTE the P2P tier deadlocks verl's engine sleep(); pass
+    # EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
+    # to every arm of a comparison (not set here, it changes memory behaviour).
     DEFAULT_NAME="qwen3_4b_grpo_waveadmissionp2p_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
     ROLLOUT_NAME="vllm-llmd-p2p"
     EXTERNAL_LIB="llm_d_rl_verl_integration.register_p2p"
-    P2P_ENGINE_HYDRA="
-      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.spec_name=TieringOffloadingSpec \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.secondary_tiers=[{type:p2p}] \
+    P2P_ENGINE_HYDRA="${P2P_ENGINE_BASE} \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_kv_available=true \
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_mode=size \
       +actor_rollout_ref.rollout.custom.wave_admission_reserve_z=1.5 \
       +actor_rollout_ref.rollout.custom.wave_admission_max_wait_s=${WAVE_ADMISSION_MAX_WAIT_S:-20}"
-    # EXPERIMENTAL, NOT live-validated (see p2p_replica.py's _generate_direct()
-    # docstring) - skips the sidecar and calls vLLM's native endpoint directly.
-    # VERL_P2P_NOSIDECAR must reach the Ray actor process via runtime_env
-    # (os.environ inside the worker, not this script's own shell env).
+    # Skip the sidecar and POST to vLLM's native endpoint. "enabled" not "true":
+    # Ray's runtime_env.env_vars rejects the bool Hydra infers from "true".
     if [[ "${WAVE_ADMISSION_P2P_NOSIDECAR:-false}" == "true" ]]; then
-      # NOTE: "enabled", not "true" - Hydra/OmegaConf's CLI override parser
-      # infers bare "true"/"false" as native Python bool, but Ray's
-      # runtime_env.env_vars requires every value to be a plain str (a bool
-      # here raises "TypeError: runtime_env['env_vars'] must be of type
-      # Dict[str, str]" at ray.init() time, found live). "enabled" has no
-      # special YAML/OmegaConf scalar meaning, so it always parses as a str.
-      # actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true
-      # (a normal, non-env-var hydra key) has no such issue - that one is
-      # read by OmegaConf.to_container() as a real bool, which is what
-      # agent_loop_manager.py's bool(_custom_get(...)) expects.
       P2P_ENGINE_HYDRA="${P2P_ENGINE_HYDRA} \
       +ray_kwargs.ray_init.runtime_env.env_vars.VERL_P2P_NOSIDECAR=enabled \
       +actor_rollout_ref.rollout.custom.wave_admission_p2p_nosidecar=true \
-      +actor_rollout_ref.rollout.custom.wave_admission_p2p_direct_port=${WAVE_ADMISSION_P2P_DIRECT_PORT:-7777}"
+      +actor_rollout_ref.rollout.custom.wave_admission_p2p_port=${WAVE_ADMISSION_P2P_PORT:-7777}"
     fi
     ;;
 
   epp-p2p)
-    # P2P KV-cache sharing (llm-d/llm-d PR #2067): every replica runs a local llm-d
-    # routing sidecar (--kv-connector=offloading) so EPP's p2p-source-producer
-    # header (x-kv-cache-source-host-port) becomes kv_transfer_params.remote_kv_source
-    # before the request reaches vLLM's OffloadingConnector P2P tier, instead of
-    # recomputing the cached prefix. rollout.name=vllm-llmd-p2p registers
-    # P2PEngineReplicaFactory (register_p2p.py / p2p_replica.py) - every replica is
-    # symmetric (both pulls and serves), unlike PD's prefill/decode split, so no
-    # disaggregation.* replica counts are needed. See deploy/epp-config-p2p.yaml.
+    # P2P KV-cache sharing (llm-d PR #2067) with EPP routing: each replica runs a
+    # local llm-d sidecar (--kv-connector=offloading) that turns EPP's
+    # x-kv-cache-source-host-port header into kv_transfer_params.remote_kv_source.
+    # Every replica both pulls and serves (no PD split). See deploy/epp-config-p2p.yaml.
+    # Override EPP_P2P_CONFIG=epp-config-p2p-load.yaml for the load-only arm.
+    # Same sleep() deadlock caveat as wave-admission-p2p above.
     DEFAULT_NAME="qwen3_4b_grpo_eppp2p_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
-    # Override via EPP_P2P_CONFIG=epp-config-p2p-load.yaml for the load-only/no-burst
-    # arm (destination picking decoupled from prefix locality - see that file's
-    # header comment for why this matters for actually exercising the P2P pull path).
     EPP_CONFIG_FILE="${EPP_P2P_CONFIG:-epp-config-p2p.yaml}"
     ROLLOUT_NAME="vllm-llmd-p2p"
     EXTERNAL_LIB="llm_d_rl_verl_integration.register_p2p"
-    # --block-size must match exactly across every replica (guide requirement: a
-    # mismatch makes the whole pull path silently inert / vLLM rejects the transfer).
-    # offload_prompt_only=false: the default (true) never offloads decode-phase
-    # (generated) blocks, so a peer pull of freshly-generated content would miss -
-    # see p2psource/README.md's "Deployment Requirements".
-    #
-    # VERL_USE_EXTERNAL_MODULES (not just model.external_lib above): verl/__init__.py
-    # reads this env var and imports it at `import verl` time, in EVERY process that
-    # touches verl - including the TaskRunnerV1 driver, which resolves rollout.name
-    # via RolloutReplicaRegistry.get() long before any FSDP worker (where
-    # model.external_lib is actually consumed, inside HFModelConfig instantiation)
-    # ever starts. Without this, the driver never imports register_p2p at all and
-    # `rollout.name=vllm-llmd-p2p` fails with "Unknown rollout mode" - model.external_lib
-    # alone only reaches the later _ROLLOUT_REGISTRY lookup, not this earlier one.
-    # cpu_bytes_to_use: the ONLY strictly-required kv_connector_extra_config key
-    # (vllm/v1/kv_offload/cpu/spec.py raises if unset - everything else there has
-    # a default).
-    #
-    # !!! THE 4GiB DEFAULT IS FAR TOO SMALL FOR LONG CONTEXTS AND SILENTLY
-    # DESTROYS THE P2P HIT RATE. Measured 2026-08-11: Qwen2.5-7B-Instruct-1M is
-    # 28 layers x 4 KV heads x 128 head_dim x 2 (K+V) x 2 (bf16) = 57344 B/token,
-    # so ONE 64K-token conversation needs 3.42 GiB and a 4GiB tier holds just
-    # 1.17 of them. A source's offloaded blocks are therefore evicted almost
-    # immediately, long before any migration asks to pull them - observed as a
-    # 3-6% pull rate plus a wildly asymmetric 211 GB stored / 3.67 MB loaded per
-    # replica (a thrashing cache, not a working one).
-    # llm-d PR #2067's reference patch-vllm.yaml states the rule: size this "at
-    # least as large as the per-pod GPU KV cache", and uses 88 GiB per replica.
-    # Override via P2P_CPU_BYTES_TO_USE. NOTE the real ceiling here is /dev/shm
-    # (the tier is mmap'd as /dev/shm/vllm_offload_*.mmap), so
-    # n_replicas x cpu_bytes_to_use must fit in it - see deploy/kuberay/
-    # ray-cluster.yaml.tmpl's `dshm` sizeLimit, not host RAM.
-    #
-    # spec_name + secondary_tiers: WITHOUT BOTH OF THESE THERE IS NO P2P TIER AT
-    # ALL, and the omission is silent. vllm/v1/kv_offload/factory.py's create_spec()
-    # defaults spec_name to "CPUOffloadingSpec" (CPU tier only); the P2P secondary-tier
-    # manager - the only code in vLLM that parses kv_transfer_params.remote_kv_source
-    # (vllm/v1/kv_offload/tiering/p2p/manager.py's _parse_source) - is built only by
-    # TieringOffloadingSpec.get_manager() iterating extra_config["secondary_tiers"].
-    # remote_kv_source is a permissive dict[str, Any], so a correctly-shaped source
-    # on a config without these keys is dropped with no error, no log and no metric.
-    # Matches llm-d/llm-d PR #2067's reference patch-vllm.yaml verbatim.
-    #
-    # Enabling the P2P tier also triggers the sleep() deadlock described in the
-    # wave-admission-p2p block above - the same
-    # EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
-    # workaround applies here, with the same "apply to every arm or none" caveat.
-    P2P_ENGINE_HYDRA="
-      +ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=llm_d_rl_verl_integration.register_p2p \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.block_size=64 \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector=OffloadingConnector \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_role=kv_both \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.offload_prompt_only=false \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296} \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.spec_name=TieringOffloadingSpec \
-      +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.secondary_tiers=[{type:p2p}]"
+    P2P_ENGINE_HYDRA="${P2P_ENGINE_BASE}"
     ;;
 
   epp-sglang)
@@ -398,16 +305,9 @@ TEST_RESOLVED=${TEST_FILE:-$DEF_TEST}
 MODEL_RESOLVED=${MODEL_PATH:-$DEF_MODEL}
 
 # -- checkpoint compatibility patch --------------------------------------------
-# Qwen 1M-context checkpoints (e.g. Qwen2.5-7B-Instruct-1M) carry
-# dual_chunk_attention_config, which this vLLM nightly cannot honour - it has no
-# dual-chunk attention backend registered, so the engine dies in
-# FlashAttentionImpl.__init__() on an unsupported layer_idx kwarg before loading
-# the model. Strip the key (idempotent no-op when absent, keeps a .dca-backup);
-# harmless for this repo's 64K-98K benchmarks, which never reach the 262144
-# threshold where DCA applies. See utils/strip_dca_config.py for the full
-# rationale. Set SKIP_DCA_STRIP=1 to leave the checkpoint untouched.
-# Resolved like WORKLOADS_DIR above: repo layout first, else /tmp/utils (where
-# run_on_head.sh ships it alongside /tmp/run_test.sh).
+# Strip dual_chunk_attention_config from Qwen 1M checkpoints; this vLLM nightly
+# dies on it. Idempotent. SKIP_DCA_STRIP=1 disables. Falls back to /tmp/utils,
+# where run_on_head.sh ships the script.
 DCA_STRIP=""
 for cand in "$SCRIPT_DIR/utils/strip_dca_config.py" /tmp/utils/strip_dca_config.py; do
   [[ -f "$cand" ]] && DCA_STRIP="$cand" && break

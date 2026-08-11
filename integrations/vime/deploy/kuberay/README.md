@@ -5,38 +5,38 @@ Step-by-step guide for deploying the vime + llm-d cluster and running training. 
 ## Prerequisites
 
 - Kubernetes cluster with GPU nodes (4 GPUs on a single node for the Qwen3-4B example)
-- KubeRay operator installed (see [setting-kuberay.md](setting-kuberay.md))
+- KubeRay operator installed (see [setting-kuberay.md](../../../verl/deploy/kuberay/setting-kuberay.md) - the operator install is framework-agnostic)
 - `envsubst` and `kubectl` on your PATH
 
-## Step 1 — Configure
+## Step 1 - Configure
 
 Export your namespace (required - not stored in a file):
 ```bash
 export NAMESPACE=<your-namespace>
 ```
 
-Images are defined in `deploy.env` — edit tags there rather than in the manifest:
+Images are defined in `deploy.env` - edit tags there rather than in the manifest:
 
 | Variable | Image |
 |---|---|
 | `IMG_VIME` | `inferactinc/public:vime-latest` |
 | `IMG_CRANE` | `gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252` |
-| `IMG_EPP` | `ghcr.io/llm-d/llm-d-router-endpoint-picker-dev:f762cfe4fe4d53be7a91a134f7cd82faddcb0347` |
+| `IMG_EPP` | `ghcr.io/llm-d/llm-d-router-endpoint-picker-dev:95625abeed826accc4dfa7903ef34a4d369830d8` (keep in step with the verl tree) |
 | `IMG_ENVOY` | `docker.io/envoyproxy/envoy:distroless-v1.33.2` |
 
 If needed, adjust the manifest:
-- **GPU count** — `resources.limits.nvidia.com/gpu` defaults to 4; edit to match your node
-- **Node placement** — `nodeAffinity` has two knobs:
-  - `NotIn` — exclude known-faulty nodes; replace the placeholder hostnames with your own
-  - `In` — pin to specific nodes; uncomment the block and add the target hostnames
+- **GPU count** - `resources.limits.nvidia.com/gpu` defaults to 4; edit to match your node
+- **Node placement** - `nodeAffinity` has two knobs:
+  - `NotIn` - exclude known-faulty nodes; replace the placeholder hostnames with your own
+  - `In` - pin to specific nodes; uncomment the block and add the target hostnames
 
-## Step 2 — Deploy
+## Step 2 - Deploy
 
 ```bash
 bash deploy.sh apply
 ```
 
-This builds the `llmd-epp-configs-vime` ConfigMap (from `epp-config.yaml`, `envoy.yaml`, `router_shim.py`, `run-qwen3-4B.sh`) and applies the rendered cluster manifest.
+This builds the `llmd-epp-configs-vime` ConfigMap (from the verl tree's `epp-config.yaml`, plus this directory's `envoy.yaml` and `run-qwen3-4B.sh`) and applies the rendered cluster manifest. `router_shim.py` is not in the ConfigMap - it ships in the `llm-d-rl-vime-integration` package that `postStart` pip-installs, and runs as the `vime-router-shim` console script.
 
 Useful sub-commands:
 ```bash
@@ -45,7 +45,7 @@ bash deploy.sh configmap  # rebuild ConfigMap only
 bash deploy.sh delete     # tear down the cluster
 ```
 
-## Step 3 — Wait for setup
+## Step 3 - Wait for setup
 
 ```bash
 kubectl get pods -n $NAMESPACE -w
@@ -61,25 +61,25 @@ kubectl exec -n $NAMESPACE $HEAD -- test -f /tmp/vime_ready.txt && echo "ready"
 
 PostStart completes when vime is installed and llm-d routing is running. Model download and weight conversion happen in the next step.
 
-## Step 4 — Health check (optional)
+## Step 4 - Health check (optional)
 
 Verify all three services are up before submitting a training job:
 
 ```bash
-# EPP — gRPC port open
+# EPP - gRPC port open
 kubectl exec -n $NAMESPACE $HEAD -- bash -c \
   'echo > /dev/tcp/127.0.0.1/9002 && echo "EPP OK" || echo "EPP DOWN"'
 
-# Envoy — HTTP port open
+# Envoy - HTTP port open
 kubectl exec -n $NAMESPACE $HEAD -- bash -c \
   'echo > /dev/tcp/127.0.0.1/8081 && echo "Envoy OK" || echo "Envoy DOWN"'
 
-# Shim — HTTP port open
+# Shim - HTTP port open
 kubectl exec -n $NAMESPACE $HEAD -- bash -c \
   'echo > /dev/tcp/127.0.0.1/3001 && echo "Shim OK" || echo "Shim DOWN"'
 ```
 
-## Step 5 — Run training
+## Step 5 - Run training
 
 Exec into the head pod and run the training script:
 
@@ -110,6 +110,7 @@ ray job stop <job-id> --address=http://127.0.0.1:8265 # graceful stop
 | `/tmp/setup_log.txt` | postStart setup (vime install, service startup) |
 | `/tmp/epp.log` | EPP |
 | `/tmp/envoy.log` | Envoy |
+| `/tmp/router.log` | `llm-d-rl-router` itself (startup, readiness, child exits) |
 | `/tmp/shim.log` | Registration shim |
 | `/tmp/ray/session_latest/logs/worker-*.out` | vLLM engine output |
 
@@ -121,28 +122,25 @@ kubectl exec -n $NAMESPACE $HEAD -- tail -f /tmp/shim.log
 
 ## EPP config
 
-`../epp-config.yaml` is the active config. To update it on a running cluster:
+[`../../../verl/deploy/epp-config.yaml`](../../../verl/deploy/epp-config.yaml) is the
+active config - one copy, shared with the verl integration. To update it on a running
+cluster:
 
 ```bash
 bash deploy.sh configmap
 ```
 
-Then restart EPP to pick up the new config — the ConfigMap is mounted read-only, so the file on disk updates automatically, but EPP only reads it at startup:
+Then restart EPP to pick up the new config - the ConfigMap is mounted read-only, so the file on disk updates automatically, but EPP only reads it at startup:
 
 ```bash
-kubectl exec -n $NAMESPACE $HEAD -- bash -c 'kill $(pgrep epp)'
-# EPP will not auto-restart; re-run the postStart start command manually:
+# llm-d-rl-router exits when a child dies, so killing EPP stops the router too;
+# start it again the same way postStart does (same flags, one implementation):
+kubectl exec -n $NAMESPACE $HEAD -- bash -c 'kill $(pgrep -f llm-d-rl-router) $(pgrep epp)'
 kubectl exec -n $NAMESPACE $HEAD -- bash -c '
-  nohup /opt/llm-d-bins/epp \
-    --config-file /etc/llmd-configs/epp-config.yaml \
-    --pool-name file-discovery \
-    --pool-namespace default \
-    --grpc-port 9002 \
-    --grpc-health-port 9003 \
-    --metrics-port 9090 \
-    --secure-serving=false \
-    --tracing=false \
-    >> /tmp/epp.log 2>&1 &
+  nohup llm-d-rl-router \
+    --epp-config /etc/llmd-configs/epp-config.yaml \
+    --envoy-config /etc/llmd-configs/envoy.yaml \
+    >> /tmp/router.log 2>&1 &
 '
 ```
 
@@ -152,5 +150,8 @@ All components default to quiet logging. Set these env vars in the `env:` block 
 
 | Env var | Component | Default | `info` | `debug` | `trace` |
 |---------|-----------|---------|--------|---------|---------|
-| `VIME_EPP_VERBOSITY` | EPP subprocess (`-v`) | `1` | `1`-`3` | `4` | `5` |
-| `VIME_ENVOY_LOG_LEVEL` | Envoy proxy (`--log-level`) | `info` | `info` | `debug` | `trace` |
+| `LLMD_EPP_VERBOSITY` | EPP subprocess (`-v`) | `1` | `1`-`3` | `4` | `5` |
+| `LLMD_ENVOY_LOG_LEVEL` | Envoy proxy (`--log-level`) | `info` | `info` | `debug` | `trace` |
+
+Both are read by `llm_d_rl_common.router_stack`, which `llm-d-rl-router` uses to build
+the EPP and Envoy argv, so they apply to every integration in this repo.

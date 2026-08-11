@@ -4,9 +4,13 @@
 #
 # Usage:
 #   bash /etc/llmd-configs/run-qwen3-4B.sh --native
-#       vime's built-in vLLM router; 1 engine with TP=2
+#       vime's built-in vLLM router
 #   bash /etc/llmd-configs/run-qwen3-4B.sh --llmd
-#       llm-d EPP + Envoy routing; 2 engines with TP=1 (EPP routes between them)
+#       llm-d EPP + Envoy routing (--vllm-router-ip/-port point vime at Envoy)
+#
+# Both modes run the same engine layout - 2 engines at TP=1
+# (--rollout-num-gpus 2 --rollout-num-gpus-per-engine 1, set unconditionally
+# below) - so the only difference between the two arms is who picks the endpoint.
 set -euo pipefail
 
 MODE=""

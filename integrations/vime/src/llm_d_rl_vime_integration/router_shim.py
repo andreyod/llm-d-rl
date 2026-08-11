@@ -6,14 +6,13 @@ Maintains the in-memory engine registry and atomically rewrites
 /tmp/epp-endpoints.yaml on every change so EPP's file-discovery plugin stays in sync.
 
 Endpoints (proxied from Envoy :8081/workers*, never called by vime directly):
-  POST   /workers          register engine — body: {url, worker_type?} → {url}
+  POST   /workers          register engine - body: {url, worker_type?} -> {url}
   GET    /workers          list engines
-  DELETE /workers/{ref}    deregister engine — ref is the percent-encoded engine URL
+  DELETE /workers/{ref}    deregister engine - ref is the percent-encoded engine URL
 """
 
 import argparse
 import logging
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -27,13 +26,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-_workers: dict[str, dict[str, Any]] = {}   # url → {url, worker_type}
+_workers: dict[str, dict[str, Any]] = {}   # url -> {url, worker_type}
 _endpoints_file: Path = Path("/tmp/epp-endpoints.yaml")
 
 
 def _write_endpoints() -> None:
     write_rollout_endpoints(str(_endpoints_file), list(_workers.keys()))
-    logger.info("endpoints: %d worker(s) → %s", len(_workers), _endpoints_file)
+    logger.info("endpoints: %d worker(s) -> %s", len(_workers), _endpoints_file)
 
 
 @app.post("/workers")
@@ -56,7 +55,9 @@ def list_workers():
 
 @app.delete("/workers/{worker_ref:path}")
 def remove_worker(worker_ref: str):
-    url = urllib.parse.unquote(worker_ref)
+    # Starlette already percent-decodes path params, so do NOT unquote again:
+    # a second pass corrupts any URL containing a literal '%'.
+    url = worker_ref
     removed = _workers.pop(url, None)
     if removed:
         _write_endpoints()
@@ -67,7 +68,7 @@ def remove_worker(worker_ref: str):
 def main():
     parser = argparse.ArgumentParser(description="Vime EPP registration shim")
     parser.add_argument("--host", default="127.0.0.1",
-                        help="Bind address (default: localhost — Envoy proxies to us)")
+                        help="Bind address (default: localhost - Envoy proxies to us)")
     parser.add_argument("--port", type=int, default=3001)
     parser.add_argument("--endpoints-file", default="/tmp/epp-endpoints.yaml")
     args = parser.parse_args()

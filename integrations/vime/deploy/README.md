@@ -35,8 +35,10 @@ EPP and Envoy are launched as external processes at runtime; they are not baked 
 
 Copy these starting-point configs to any path readable on the head node:
 
-- [`epp-config.yaml`](epp-config.yaml) — EPP scorer pipeline (burst prefix-cache + load-aware)
-- [`envoy.yaml`](envoy.yaml) — Envoy listener config
+- [`epp-config.yaml`](../../verl/deploy/epp-config.yaml) - EPP scorer pipeline (burst
+  prefix-cache + load-aware). Shared with the verl integration: the scorer config is
+  engine- and framework-agnostic, so there is deliberately only one copy in the repo.
+- [`envoy.yaml`](envoy.yaml) - Envoy listener config
 
 The EPP config's `file-discovery` plugin `path:` must match the `--endpoints-file` passed to `vime-router-shim` (default `/tmp/epp-endpoints.yaml`).
 
@@ -45,21 +47,16 @@ The EPP config's `file-discovery` plugin `path:` must match the `--endpoints-fil
 On the head node:
 
 ```bash
-# EPP
-epp \
-  --config-file /path/to/epp-config.yaml \
-  --pool-name file-discovery \
-  --pool-namespace default \
-  --grpc-port 9002 \
-  --grpc-health-port 9003 \
-  --metrics-port 9090 \
-  --secure-serving=false \
-  --tracing=false &
+# EPP + Envoy, via the shared launcher from llm-d-rl-common. It owns the argv for
+# both (including --allow-experimental-plugins, which the config's
+# burst-prefix-cache-producer requires), waits for each to accept connections, and
+# exits if either dies. Point it at the binaries with LLMD_EPP_BINARY /
+# LLMD_ENVOY_BINARY if they are not on PATH.
+llm-d-rl-router \
+  --epp-config /path/to/epp-config.yaml \
+  --envoy-config /path/to/envoy.yaml &
 
-# Envoy
-envoy -c /path/to/envoy.yaml &
-
-# Registration shim (internal only — Envoy proxies /workers* to it)
+# Registration shim (internal only - Envoy proxies /workers* to it)
 vime-router-shim \
   --host 127.0.0.1 \
   --port 3001 \
@@ -77,7 +74,7 @@ python3 /tmp/vime/train.py \
   --vllm-router-port 8081
 ```
 
-When `--vllm-router-ip` is set, vime skips its built-in router entirely ([`rollout.py:1035`](https://github.com/vllm-project/vime/blob/main/vime/ray/rollout.py#L1035)). vLLM engines register themselves via `POST /workers` on startup — Envoy routes this to the shim, which writes `/tmp/epp-endpoints.yaml`. EPP watches that file and starts routing inference requests.
+When `--vllm-router-ip` is set, vime skips its built-in router entirely ([`rollout.py:1035`](https://github.com/vllm-project/vime/blob/main/vime/ray/rollout.py#L1035)). vLLM engines register themselves via `POST /workers` on startup - Envoy routes this to the shim, which writes `/tmp/epp-endpoints.yaml`. EPP watches that file and starts routing inference requests.
 
 For the full `train.py` command with all training hyperparameters, see [`kuberay/run-qwen3-4B.sh`](kuberay/run-qwen3-4B.sh).
 
@@ -87,7 +84,8 @@ For the full `train.py` command with all training hyperparameters, see [`kuberay
 |------|-----------|
 | `/tmp/epp.log` | EPP |
 | `/tmp/envoy.log` | Envoy |
+| `/tmp/router.log` | `llm-d-rl-router` itself (startup, readiness, child exits) |
 | `/tmp/shim.log` | Registration shim |
 
-Increase EPP verbosity by adding `-v=5` to the EPP startup command.
-Increase Envoy verbosity by adding `--log-level debug`.
+Raise EPP verbosity with `LLMD_EPP_VERBOSITY=5` and Envoy's with
+`LLMD_ENVOY_LOG_LEVEL=debug` in the router's environment.

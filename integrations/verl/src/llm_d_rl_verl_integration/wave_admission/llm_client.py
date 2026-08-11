@@ -1,9 +1,4 @@
-"""LLMServerClient for wave-based admission control: NEW conversations are
-gated by an ``AdmissionLedger`` Ray actor using ESTIMATED per-replica free KV
-budget, instead of routing through verl's ``GlobalRequestLoadBalancer`` or an
-external EPP. Placement is sticky for a trajectory's later turns (Phase 1
-does no migration) - see ``~/.claude/plans/steady-splashing-blanket.md``.
-"""
+"""LLMServerClient that routes each turn via the AdmissionLedger actor."""
 
 from __future__ import annotations
 
@@ -33,13 +28,7 @@ def _forced_output_len(sampling_params: dict[str, Any]) -> int:
 
 
 class WaveAdmissionLLMClient(LLMServerClient):
-    """Routes NEW conversations via ``AdmissionLedger.acquire()``; later turns
-    of the same conversation stick to their assigned replica. Dispatches
-    directly to the vLLM actor handle - the same bypass-the-load-balancer
-    pattern ``EPPLLMClient`` uses, since
-    ``GlobalRequestLoadBalancer.acquire_server`` has no way to be told to
-    return a specific server.
-    """
+    """Asks the ledger for a replica, then dispatches to that server actor."""
 
     def __init__(
         self,
@@ -48,17 +37,19 @@ class WaveAdmissionLLMClient(LLMServerClient):
         *,
         address_to_handle: dict[str, ray.actor.ActorHandle],
         admission_ledger: ray.actor.ActorHandle,
+        p2p_nosidecar: bool = False,
         **kwargs,
     ):
         super().__init__(config=config, load_balancer_handle=load_balancer_handle, **kwargs)
         self._address_to_handle = address_to_handle
         self._admission_ledger = admission_ledger
+        # When set, build kv_transfer_params directly instead of a sidecar header.
+        self._p2p_nosidecar = p2p_nosidecar
 
     def __setstate__(self, state):
         self.__dict__.update(state)
         self._reqlog_f = open_reqlog()
-        # Per-trajectory turn counter, keyed by the (stable) incoming
-        # request_id - see the LoggingLLMClient/EPPLLMClient twins.
+        # Per-trajectory turn counter, keyed by incoming request_id.
         self._turn_counts: dict[str, int] = {}
 
     async def on_trajectory_done(self, request_id) -> None:
@@ -86,9 +77,11 @@ class WaveAdmissionLLMClient(LLMServerClient):
         turn = self._turn_counts.get(rid, 0)
         context_size = float(len(prompt_ids) + _forced_output_len(sampling_params))
 
-        replica = await self._admission_ledger.acquire.remote(
+        placement = await self._admission_ledger.acquire.remote(
             rid, turn_index=turn, context_size=context_size,
         )
+        replica = placement["replica"]
+        kv_source = placement.get("kv_source")
         t_pick = time.monotonic()
         actor = self._address_to_handle[replica]
 
@@ -97,6 +90,23 @@ class WaveAdmissionLLMClient(LLMServerClient):
             multimodal_kwargs["audio_data"] = audio_data
         if mm_processor_kwargs:
             multimodal_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
+
+        # Set only on a migration with p2p_kv_available: names the replica the
+        # KV was resident on so the destination pulls it. Passed only when set -
+        # the non-P2P server's generate() has no such parameter.
+        if kv_source:
+            if self._p2p_nosidecar:
+                # Shape expected by vLLM's P2P manager (_parse_source).
+                host, _, port = kv_source.rpartition(":")
+                kwargs["kv_transfer_params"] = {
+                    "remote_kv_source": {
+                        "remote_host": host,
+                        "remote_port": int(port),
+                        "kv_request_id": uuid4().hex,
+                    }
+                }
+            else:
+                kwargs["sidecar_headers"] = {"x-kv-cache-source-host-port": kv_source}
 
         out = None
         try:
@@ -131,4 +141,14 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 "output_tokens": ntok,
                 "pick_s": round(t_pick - t0, 5),
                 "gen_s": round(t_end - t_pick, 5),
+                # Non-null iff the ledger migrated this turn.
+                "kv_source": kv_source,
+                # vLLM's echo of kv_transfer_params (p2p_nosidecar mode only).
+                "kv_transfer_params_response": (
+                    getattr(out, "extra_fields", None) or {}
+                ).get("kv_transfer_params_response") if out is not None else None,
+                # Connector-agnostic prefix-hit ground truth.
+                "cached_tokens": (
+                    getattr(out, "extra_fields", None) or {}
+                ).get("cached_tokens") if out is not None else None,
             })

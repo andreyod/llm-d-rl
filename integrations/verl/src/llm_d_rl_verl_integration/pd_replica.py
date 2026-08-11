@@ -197,7 +197,7 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
                 data = await resp.json()
         except _asyncio.CancelledError:
             logger.error(
-                "generate() task was CANCELLED mid-sidecar-request — "
+                "generate() task was CANCELLED mid-sidecar-request - "
                 "this orphans NIXL blocks on the prefill. request_id=%s url=%s",
                 request_id,
                 url,
@@ -205,7 +205,7 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
             raise
         except Exception as e:
             logger.error(
-                "generate() raised %s: %s — request_id=%s url=%s",
+                "generate() raised %s: %s - request_id=%s url=%s",
                 type(e).__name__,
                 e,
                 request_id,
@@ -228,7 +228,14 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
             token_ids=token_ids,
             stop_reason=finish_reason,
             log_probs=log_probs,
-            extra_fields={"global_steps": self.global_steps},
+            extra_fields={
+                "global_steps": self.global_steps,
+                # Connector-agnostic prefix-hit ground truth. Requires
+                # engine_kwargs.vllm.enable_prompt_tokens_details=true.
+                "cached_tokens": (
+                    (data.get("usage") or {}).get("prompt_tokens_details") or {}
+                ).get("cached_tokens"),
+            },
         )
 
 

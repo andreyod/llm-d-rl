@@ -10,10 +10,8 @@ spec:
       num-cpus: "4"
     template:
       spec:
-        # Co-locate the head on the same node as the worker. EPP and Envoy run on
-        # the head, so keeping it on the worker's node keeps rollout routing on-node.
-        # The worker is anchored to a GPU node by its nvidia.com/gpu request; the head
-        # follows it via podAffinity (head -> worker, one direction, to avoid deadlock).
+        # Co-locate the head with the worker so EPP/Envoy routing stays on-node.
+        # One-directional (head -> worker) to avoid a scheduling deadlock.
         affinity:
           podAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
@@ -22,13 +20,9 @@ spec:
                   ray.io/cluster: verl-cluster
                   ray.io/node-type: worker
               topologyKey: kubernetes.io/hostname
-        # Neither the EPP nor Envoy is baked into the verl image. At pod start the
-        # fetch-binaries init container pulls the SEPARATE (public) EPP and Envoy
-        # images with crane and extracts their binaries into the shared llm-d-bins
-        # volume, which ray-head then launches via VERL_EPP_BINARY
-        # (/opt/llm-d-bins/epp) and VERL_ENVOY_BINARY (/opt/llm-d-bins/envoy). So
-        # iterating on either is: bump its image tag + recreate this pod - the verl
-        # image never rebuilds. push-epp.sh covers the faster no-recreate EPP loop.
+        # EPP and Envoy are not in the verl image: this init container extracts them
+        # from their own images into llm-d-bins. To change either, bump its tag in
+        # deploy.env and recreate the pod (push-epp.sh is the faster EPP loop).
         initContainers:
         - name: fetch-binaries
           # Generic registry tool pinned by digest (go-containerregistry crane
@@ -70,11 +64,8 @@ spec:
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
-                  # vLLM renamed FusedMoE to FusedMoEFactory; verl's vllm_fp8_utils.py imports
-                  # the old name unconditionally. Patch in a fallback right after checkout, since
-                  # verl is third-party and cloned fresh every pod start - this can't live in any
-                  # image. Warns (doesn't fail) if the pattern is gone, so a future verl commit
-                  # bump doesn't silently break postStart.
+                  # verl imports the old FusedMoE name; patch in a fallback. verl is
+                  # cloned fresh every pod start, so this cannot live in an image.
                   python3 - <<'PYEOF'
                   path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
                   content = open(path).read()
@@ -86,11 +77,8 @@ spec:
                   PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
-                  # Install the common package first (verl package depends on it), then the
-                  # integration package itself (both public repo). Fail loudly: set -e aborts
-                  # before the ready marker if a clone/build fails, and the import checks turn
-                  # a silent empty install into a hard postStart error (container restarts)
-                  # instead of a pod that looks ready but is broken.
+                  # Common package first (the verl package depends on it). The import
+                  # checks make a silent empty install a hard postStart failure.
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/common"
                   python3 -c "import llm_d_rl_common" || { echo "FATAL: common package not importable after install"; exit 1; }
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
@@ -138,19 +126,14 @@ spec:
           - name: VERL_FILE_LOGGER_ROOT
             value: "/tmp/verl/logs"
 
-          # --- EPP / Envoy binary paths (filled by the fetch-binaries init container) ---
-          # Neither binary is in the verl image; fetch-binaries extracts them from
-          # their separate images into /opt/llm-d-bins, and push-epp.sh can
-          # overwrite the EPP live. The actor launches whatever binaries are here.
+          # --- EPP / Envoy binary paths (from the fetch-binaries init container) ---
           - name: VERL_EPP_BINARY
             value: "/opt/llm-d-bins/epp"
           - name: VERL_ENVOY_BINARY
             value: "/opt/llm-d-bins/envoy"
 
           # --- vLLM / Ray settings ---
-          # Fixed fleet-wide (not left to the pod's own default): P2P KV-cache
-          # sharing needs identical block hashes across every replica, and an
-          # unpinned/varying PYTHONHASHSEED breaks that match silently.
+          # PYTHONHASHSEED must be pinned fleet-wide or P2P block hashes never match.
           - name: PYTHONHASHSEED
             value: "0"
           - name: VLLM_USE_V1
@@ -179,14 +162,10 @@ spec:
           resources:
             limits:
               cpu: "32"
-              # 512G (was 96G): the head runs the driver (fit() loop), which is also the
-              # dataloader and the point where every generated sequence is collected into one
-              # DataProto. For MULTIMODAL tasks (geo3k) with large images the per-sample
-              # pixel_values are large (~19MB at 2048 image tokens, ~38MB at 4096) and validation
-              # generates the whole test set as one batch on the driver, so 96G OOM'd the head.
-              # The node has ~2TB, so give the head generous headroom. Text tasks are unaffected.
+              # The driver collects a whole validation batch here; multimodal tasks
+              # need the headroom.
               memory: "512G"
-              # No GPU on head — it only runs the driver (fit() loop) and Ray GCS.
+              # No GPU on head - it only runs the driver (fit() loop) and Ray GCS.
               # FSDP training and NCCL broadcast happen on worker pods.
             requests:
               cpu: "24"
@@ -217,10 +196,7 @@ spec:
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs
-        # Shared scratch: fetch-binaries (init) extracts the EPP and Envoy binaries
-        # here and ray-head reads them at /opt/llm-d-bins (VERL_EPP_BINARY /
-        # VERL_ENVOY_BINARY); push-epp.sh can overwrite the EPP live. Starts empty
-        # on a fresh pod.
+        # Shared scratch for the EPP/Envoy binaries; starts empty on a fresh pod.
         - name: llm-d-bins
           emptyDir: {}
 
@@ -237,10 +213,8 @@ spec:
       num-cpus: "48"   # limit Ray's visible CPUs to reduce internal thread spawning
     template:
       spec:
-        # No node pinning: the nvidia.com/gpu request anchors this worker to a GPU
-        # node, and the head co-locates onto whatever node it lands on (see head
-        # podAffinity above). The head must NOT also be referenced here, or mutual
-        # required affinity would deadlock the scheduler.
+        # No node pinning: the GPU request anchors this worker and the head follows.
+        # Do not add affinity back to the head - mutual required affinity deadlocks.
         # Exclude nodes with known-faulty GPUs (device plugin "GPU is lost" admission
         # errors) so the scheduler does not keep retrying them. Add hostnames as needed.
         affinity:
@@ -252,13 +226,8 @@ spec:
                   operator: NotIn
                   values:
                   - excluded-node
-        # The sidecar is NOT baked into the verl image. At pod start the
-        # fetch-sidecar init container pulls the SEPARATE (public) sidecar image
-        # with crane and extracts its /app/pd-sidecar binary into the shared
-        # llm-d-bins volume, which decode replicas launch via VERL_SIDECAR_BINARY
-        # (/opt/llm-d-bins/pd-sidecar). Only used in PD mode. Bump the image tag in
-        # deploy/deploy.env + recreate the pod to change it. Worker-only: the EPP
-        # and Envoy binaries are fetched on the head, the sidecar runs here.
+        # Extracts the pd-sidecar binary into llm-d-bins for the replicas to launch
+        # (VERL_SIDECAR_BINARY). Bump the tag in deploy.env and recreate to change.
         initContainers:
         - name: fetch-sidecar
           # Generic registry tool pinned by digest (go-containerregistry crane
@@ -294,11 +263,8 @@ spec:
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
-                  # vLLM renamed FusedMoE to FusedMoEFactory; verl's vllm_fp8_utils.py imports
-                  # the old name unconditionally. Patch in a fallback right after checkout, since
-                  # verl is third-party and cloned fresh every pod start - this can't live in any
-                  # image. Warns (doesn't fail) if the pattern is gone, so a future verl commit
-                  # bump doesn't silently break postStart.
+                  # verl imports the old FusedMoE name; patch in a fallback. verl is
+                  # cloned fresh every pod start, so this cannot live in an image.
                   python3 - <<'PYEOF'
                   path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
                   content = open(path).read()
@@ -310,11 +276,8 @@ spec:
                   PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
-                  # Install the common package first (verl package depends on it), then the
-                  # integration package itself (both public repo). Fail loudly: set -e aborts
-                  # before the ready marker if a clone/build fails, and the import checks turn
-                  # a silent empty install into a hard postStart error (container restarts)
-                  # instead of a pod that looks ready but is broken.
+                  # Common package first (the verl package depends on it). The import
+                  # checks make a silent empty install a hard postStart failure.
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/common"
                   python3 -c "import llm_d_rl_common" || { echo "FATAL: common package not importable after install"; exit 1; }
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
@@ -362,9 +325,7 @@ spec:
             value: "/opt/llm-d-bins/pd-sidecar"
 
           # --- vLLM / Ray settings ---
-          # Fixed fleet-wide (not left to the pod's own default): P2P KV-cache
-          # sharing needs identical block hashes across every replica, and an
-          # unpinned/varying PYTHONHASHSEED breaks that match silently.
+          # PYTHONHASHSEED must be pinned fleet-wide or P2P block hashes never match.
           - name: PYTHONHASHSEED
             value: "0"
           - name: VLLM_USE_V1
@@ -433,7 +394,9 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: "64Gi"
+            # /dev/shm holds OffloadingConnector's CPU KV tier, so this caps
+            # cpu_bytes_to_use x n_replicas. Counts against the pod memory limit.
+            sizeLimit: "256Gi"
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs

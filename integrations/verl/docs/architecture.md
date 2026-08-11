@@ -24,7 +24,8 @@ That one class, and the handful of files it pulls in, is the entire mandatory in
 src/llm_d_rl_verl_integration/
   base_agent_loop_manager.py     starts EPP as a head-node Ray actor, injects the client into workers
   endpoints.py                   writes the endpoints YAML that EPP reads (the replica list)
-  llmd_actor.py                  the head-node actor that launches EPP (and, in serving mode, Envoy)
+  llmd_actor.py                  the head-node actor that launches EPP (and, in serving mode, Envoy);
+                                 the launching itself lives in llm_d_rl_common.router_stack
   llmd_epp/
     agent_loop_manager.py        entry point - the class named in the override above
     llm_client.py                EPPLLMClient - asks EPP to pick, then dispatches to that replica

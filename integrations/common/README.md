@@ -15,3 +15,9 @@ other framework integration that needs to talk to EPP.
   hook that is a no-op unless completion tracking was requested.
 - `reqlog.py` - shared per-request JSONL logging helpers.
 - `endpoints.py` - EPP file-discovery endpoints YAML writer.
+- `router_stack.py` - `RouterStack`: owns the EPP / Envoy argv, binary-path resolution
+  (`LLMD_EPP_BINARY`, falling back to `VERL_EPP_BINARY`) and readiness waiting. Stdlib
+  only, no ray. verl's `LlmdActor` wraps it in a head-pinned Ray actor.
+- `cli.py` - the `llm-d-rl-router` console script: runs the same stack in the
+  foreground, for frameworks that start EPP from a pod lifecycle hook instead of from
+  inside the training process.

@@ -1,38 +1,12 @@
-"""AgentLoopManager for wave-based admission control (Phase 1 of the
-wave-admission + migration/offload plan -
-see ``~/.claude/plans/steady-splashing-blanket.md``). Gates NEW conversation
-admission by an ESTIMATE of per-replica free KV budget instead of routing
-through verl's own load balancer or an external EPP; no cross-replica
-migration (sticky after admission). Implements findings #5/#6 of
-``~/work/rl-work/agentic/simulator2/FINDINGS.md`` for real, against live
-vLLM replicas.
+"""AgentLoopManager for wave-based admission control.
 
-To use, set in the training YAML config:
-
-    actor_rollout_ref:
-      rollout:
-        name: vllm
-        agent:
-          agent_loop_manager_class: llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager
-        custom:
-          epp_endpoints_file: /tmp/epp-endpoints.yaml       # optional, for the /metrics scraper
-          wave_admission_wave1_size: 128                    # optional, default 128
-          wave_admission_gpu_capacity_gb: 139.8              # optional
-          wave_admission_gpu_util: 0.6                       # optional
-          wave_admission_weights_gb: 15.2                    # optional
-          wave_admission_kv_bytes_per_token: 57344           # optional
-          wave_admission_initial_growth_guess: 100000        # optional
-          wave_admission_prior_weight: 15                    # optional
-          wave_admission_max_wait_s: 60                      # optional
-          wave_admission_poll_interval_s: 0.5                # optional
-          wave_admission_allow_migration: true               # optional, default true
-          wave_admission_reserve_mode: size                  # optional, "turn"|"size"|"turn_size", default "size"
-          wave_admission_reserve_z: 1.5                      # optional, default 1.5
-          wave_admission_migration_cost_ratio: 1.0           # optional, default 1.0
-          wave_admission_p2p_kv_available: false             # optional, default false - set true with --mode wave-admission-p2p
-          wave_admission_p2p_port: 7777                       # optional, vLLM's P2P tier port; must match the sidecar's --p2p-connector-port
-          wave_admission_migration_cost_ratio_p2p: 0.0        # optional, default 0.0 (benchmarking assumption: ~free P2P pull)
-          wave_admission_p2p_nosidecar: false                 # optional, default false - bypass the sidecar, call vLLM's native endpoint
+Set actor_rollout_ref.rollout.agent.agent_loop_manager_class to this class.
+Tunables go under actor_rollout_ref.rollout.custom as wave_admission_*
+(wave1_size, gpu_capacity_gb, gpu_util, weights_gb, kv_bytes_per_token,
+initial_growth_guess, prior_weight, max_wait_s, poll_interval_s,
+allow_migration, reserve_mode, reserve_z, migration_cost_ratio,
+p2p_kv_available, p2p_port, migration_cost_ratio_p2p, p2p_nosidecar) plus
+epp_endpoints_file.
 """
 
 from __future__ import annotations
@@ -72,10 +46,7 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
         endpoints_file = _custom_get(custom, "epp_endpoints_file", _DEFAULT_ENDPOINTS_FILE)
         write_rollout_endpoints(endpoints_file, server_addresses, self.model_config)
 
-        # Build address -> actor handle map, same convention
-        # LlmdRouterAgentLoopManager uses: vLLMReplica.launch_servers() names
-        # each replica's node-0 server actor "vllm_server_{rank}_0", and
-        # server_addresses[i] corresponds to replica_rank i.
+        # vLLMReplica names replica i's server actor "vllm_server_{i}_0".
         self._address_to_handle = {}
         for i, addr in enumerate(server_addresses):
             actor_name = f"vllm_server_{i}_0"
@@ -119,8 +90,7 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
             p2p_kv_available, migration_cost_ratio_p2p, p2p_nosidecar, p2p_port,
         )
 
-        # Pin the ledger to the head node (same rationale as LlmdActor: one
-        # long-lived actor the whole fleet of AgentLoopWorkers shares).
+        # One long-lived ledger actor, pinned to the head, shared fleet-wide.
         self._admission_ledger = AdmissionLedger.options(
             scheduling_strategy=self.head_node_strategy()
         ).remote(

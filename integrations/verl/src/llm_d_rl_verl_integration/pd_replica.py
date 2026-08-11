@@ -197,7 +197,7 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
                 data = await resp.json()
         except _asyncio.CancelledError:
             logger.error(
-                "generate() task was CANCELLED mid-sidecar-request — "
+                "generate() task was CANCELLED mid-sidecar-request - "
                 "this orphans NIXL blocks on the prefill. request_id=%s url=%s",
                 request_id,
                 url,
@@ -205,7 +205,7 @@ class PDDecodeVLLMHttpServer(vLLMHttpServer):
             raise
         except Exception as e:
             logger.error(
-                "generate() raised %s: %s — request_id=%s url=%s",
+                "generate() raised %s: %s - request_id=%s url=%s",
                 type(e).__name__,
                 e,
                 request_id,

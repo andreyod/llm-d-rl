@@ -1,9 +1,4 @@
-"""LLMServerClient for wave-based admission control: NEW conversations are
-gated by an ``AdmissionLedger`` Ray actor using ESTIMATED per-replica free KV
-budget, instead of routing through verl's ``GlobalRequestLoadBalancer`` or an
-external EPP. Placement is sticky for a trajectory's later turns (Phase 1
-does no migration) - see ``~/.claude/plans/steady-splashing-blanket.md``.
-"""
+"""LLMServerClient that routes each turn via the AdmissionLedger actor."""
 
 from __future__ import annotations
 
@@ -33,13 +28,7 @@ def _forced_output_len(sampling_params: dict[str, Any]) -> int:
 
 
 class WaveAdmissionLLMClient(LLMServerClient):
-    """Routes NEW conversations via ``AdmissionLedger.acquire()``; later turns
-    of the same conversation stick to their assigned replica. Dispatches
-    directly to the vLLM actor handle - the same bypass-the-load-balancer
-    pattern ``EPPLLMClient`` uses, since
-    ``GlobalRequestLoadBalancer.acquire_server`` has no way to be told to
-    return a specific server.
-    """
+    """Asks the ledger for a replica, then dispatches to that server actor."""
 
     def __init__(
         self,
@@ -54,17 +43,13 @@ class WaveAdmissionLLMClient(LLMServerClient):
         super().__init__(config=config, load_balancer_handle=load_balancer_handle, **kwargs)
         self._address_to_handle = address_to_handle
         self._admission_ledger = admission_ledger
-        # See p2p_replica.py's VERL_P2P_NOSIDECAR docstring - when set, migration
-        # dispatch builds kv_transfer_params directly instead of sidecar_headers,
-        # matching P2PVLLMHttpServer._generate_direct()'s expected shape.
-        # UNVALIDATED end-to-end as of this writing - see that method's docstring.
+        # When set, build kv_transfer_params directly instead of a sidecar header.
         self._p2p_nosidecar = p2p_nosidecar
 
     def __setstate__(self, state):
         self.__dict__.update(state)
         self._reqlog_f = open_reqlog()
-        # Per-trajectory turn counter, keyed by the (stable) incoming
-        # request_id - see the LoggingLLMClient/EPPLLMClient twins.
+        # Per-trajectory turn counter, keyed by incoming request_id.
         self._turn_counts: dict[str, int] = {}
 
     async def on_trajectory_done(self, request_id) -> None:

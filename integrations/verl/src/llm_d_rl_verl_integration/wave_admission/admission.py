@@ -1,14 +1,8 @@
-"""Wave-based admission control: causal per-turn-index growth estimator + a
-per-replica admission ledger that gates NEW conversation starts by ESTIMATED
-free KV budget, per findings #5/#6 of the scheduling simulator
-(``~/work/rl-work/agentic/simulator2/FINDINGS.md``). Ported to run for real
-against live vLLM replicas instead of a discrete-event simulation - see
-``~/.claude/plans/steady-splashing-blanket.md`` for the design writeup.
+"""Wave-based admission control: a per-replica ledger that gates new
+conversation starts by estimated free KV budget, with reactive migration.
 
-``AdmissionLedger`` runs as a single Ray actor (the same pattern verl's own
-``GlobalRequestLoadBalancer`` uses) so every ``AgentLoopWorker`` process shares
-one consistent ledger instead of each worker holding its own private,
-inconsistent copy after ``LLMServerClient`` gets pickled to it.
+``AdmissionLedger`` runs as one Ray actor so every ``AgentLoopWorker`` shares
+the same ledger state.
 """
 
 from __future__ import annotations
@@ -34,34 +28,10 @@ def _env_float(name: str, default: float) -> float:
 
 
 class GrowthEstimator:
-    """Causal, cross-conversation running estimate of "remaining KV growth",
-    generalized per the simulator's follow-up finding
-    (``~/work/rl-work/agentic/simulator2/FINDINGS.md`` #8-10): keyed by
-    ``reserve_mode`` instead of turn index alone, with an optional
-    ``reserve_z`` tail-risk margin on top of the point estimate.
+    """Causal estimate of a conversation's remaining KV growth.
 
-    - ``reserve_mode="turn"``: key = turn index k (the original design).
-    - ``reserve_mode="size"``: key = log2 bucket of the CURRENT context size
-      - a directly observable, generally stronger signal for "how much more
-      will this grow" than turn count alone. This is the mode that won the
-      simulator's 12-seed A/B (-7.9% vs sticky at reserve_z~1.5-2.0, vs -4.7%
-      for turn+mean).
-    - ``reserve_mode="turn_size"``: both jointly (fragments the sample more;
-      pairs badly with a large reserve_z per the simulator's finding 9).
-
-    ``reserve_z`` adds ``reserve_z * std`` on top of the mean, where std is a
-    SEPARATE, unblended Welford running standard deviation over REAL samples
-    only at that key (no principled prior variance to seed it with) - it is
-    exactly 0.0 until >=2 real samples land in a key, so it has no effect
-    during bootstrap and only kicks in once real variance data exists.
-    ``reserve_mode="turn", reserve_z=0.0`` reproduces the original turn-only,
-    mean-only estimator exactly.
-
-    Guardrail: only ever fed via ``observe()`` from conversations that have
-    ALREADY fully completed (see ``AdmissionLedger.on_trajectory_done``) -
-    never from a conversation's own future. Feeding it from a conversation's
-    own future turns reproduces the leakage bug the simulator caught: it
-    inflated the measured improvement by ~4%.
+    reserve_mode keys on turn index, context-size bucket, or both; reserve_z
+    adds a std margin. Only fed from already-completed conversations.
     """
 
     def __init__(
@@ -95,10 +65,7 @@ class GrowthEstimator:
         return int(math.log2(max(size, 1)))
 
     def key(self, context_size: float, turn_index: int):
-        """The estimator key for a resident at this turn/size, per
-        reserve_mode. Callers compute this once and pass it to both
-        ``estimate()`` and (once the conversation completes) ``observe()``.
-        """
+        """Estimator key for this resident, per reserve_mode."""
         if self._reserve_mode == "turn":
             return turn_index
         if self._reserve_mode == "size":
@@ -133,16 +100,11 @@ class GrowthEstimator:
 
 @ray.remote
 class AdmissionLedger:
-    """Per-fleet admission state shared (via Ray actor handle) by every
-    ``AgentLoopWorker``'s ``WaveAdmissionLLMClient``.
+    """Admission state shared by every ``WaveAdmissionLLMClient``.
 
-    Placement prefers staying resident (cheap, incremental) once admitted; if
-    ``allow_reactive_migration`` is True (default) and the resident replica
-    can no longer fit a conversation's next turn, it falls back to whichever
-    other replica currently has room, rather than blocking or overshooting.
-    This is reactive (only triggers when the resident replica genuinely lacks
-    room), not proactive load-balancing (which would compare every replica's
-    projected completion time on every turn regardless of fit).
+    Prefers staying resident once admitted; with ``allow_reactive_migration``
+    it falls back to another replica only when the resident one cannot fit the
+    next turn.
     """
 
     def __init__(
@@ -219,17 +181,7 @@ class AdmissionLedger:
         return max(self._replicas, key=self._estimated_free)
 
     def _book(self, request_id: str, replica: str, turn_index: int, context_size: float) -> None:
-        """Pre-book an ESTIMATED context_size at turn_index on replica.
-
-        If ``replica`` is already this request's resident replica and it has
-        a recorded size for turn_index - 1, only the INCREMENTAL delta over
-        that prior size is added (the rest is already counted - sticky
-        continuation, cheap). Otherwise (turn 0, or landing on a NEW replica
-        via migration) the FULL context_size is added fresh - a cold load,
-        matching the simulator's full_prefill_cost vs incr_cost distinction.
-        ``record_turn`` later corrects this estimate to the actual
-        post-generation size.
-        """
+        """Record a booking for this request on `replica` at `turn_index`."""
         history = self._history.setdefault(request_id, {})
         if self._resident.get(request_id) == replica and (turn_index - 1) in history:
             prev = history[turn_index - 1]
@@ -249,29 +201,7 @@ class AdmissionLedger:
         self._used[replica] = max(0.0, self._used[replica] - size)
 
     async def acquire(self, request_id: str, *, turn_index: int, context_size: float) -> dict:
-        """Return {"replica": <address>, "kv_source": <address-or-None>} for
-        this request to dispatch to. ``kv_source`` is only ever non-None on a
-        migration into a NEW replica while ``p2p_kv_available`` is set - it
-        names the replica the conversation's KV was previously resident on
-        (known exactly, from our own sticky ``_resident`` map), for the
-        caller to stamp as ``x-kv-cache-source-host-port`` so the P2P sidecar
-        pulls it instead of the destination recomputing from scratch.
-
-        turn_index == 0 (a brand-new conversation): may WAIT (poll) until a
-        replica has enough estimated headroom, unless still inside the
-        unconditional first wave.
-        turn_index > 0: prefers staying on the resident replica (cheap,
-        incremental) if it fits; otherwise, if ``allow_reactive_migration``,
-        falls back to whichever OTHER replica currently has room for the
-        full context - a reactive migration, not a proactive one (it only
-        triggers when the resident replica genuinely can't fit the next
-        turn, mirroring the simulator's plain "online" policy, not
-        "online_lb"'s every-turn projected-completion comparison). If
-        migration is disabled, or nowhere fits, it stays resident and
-        overshoots rather than blocking an already-running conversation -
-        real vLLM's own asymmetry: preemption protects continuations, it
-        never stalls them waiting for room that isn't there.
-        """
+        """Pick a replica: {"replica": addr, "kv_source": addr-or-None}."""
         if turn_index > 0:
             return self._continue_or_migrate(request_id, turn_index, context_size)
 
@@ -318,20 +248,8 @@ class AdmissionLedger:
             self._book(request_id, resident, turn_index, context_size)
             return {"replica": resident, "kv_source": None}
 
-        # Resident can't fit the incremental growth - but migrating is not
-        # free in general: with no offload/P2P available, a migrated turn
-        # pays a FULL re-prefill of context_size, measured empirically this
-        # session at ~33% more wall-clock than an incremental continuation at
-        # typical sizes (~2.5s extra at ~50K tokens). Only worth paying that
-        # real cost if the shortfall it relieves is itself large relative to
-        # that cost - otherwise migration just adds recompute on top of a
-        # marginal (possibly false, since our budget estimate is
-        # conservative) crisis. migration_cost_ratio=1.0 (default, no P2P)
-        # requires the deficit to be at least as large as the full re-prefill
-        # it would cost to relieve it.
-        #
-        # With p2p_kv_available the destination pulls instead of recomputing,
-        # so the cheaper migration_cost_ratio_p2p gate applies.
+        # Migrate only when the deficit is large relative to the cost it
+        # relieves: a full re-prefill without P2P, a cheap pull with it.
         effective_cost_ratio = (
             self._migration_cost_ratio_p2p if self._p2p_kv_available else self._migration_cost_ratio
         )
@@ -349,9 +267,7 @@ class AdmissionLedger:
                 self._book(request_id, target, turn_index, context_size)
                 kv_source = None
                 if self._p2p_kv_available:
-                    # The source's P2P control socket, addressed by its own
-                    # loopback IP (index = the resident's replica_rank), NOT its
-                    # HTTP dispatch address.
+                    # The source's P2P control socket, not its HTTP address.
                     kv_source = (
                         f"{p2p_listener_host(self._replicas.index(resident))}"
                         f":{self._p2p_port}"
@@ -364,20 +280,13 @@ class AdmissionLedger:
                 )
                 return {"replica": target, "kv_source": kv_source}
 
-        # Nowhere (including resident) has room, migration is disabled, or
-        # the deficit isn't severe enough to justify the recompute cost:
-        # stay resident and overshoot rather than blocking an in-flight
-        # conversation or paying to relieve a marginal shortfall.
+        # Nothing fits or migration isn't worth it: stay resident and overshoot
+        # rather than stall a running conversation.
         self._book(request_id, resident, turn_index, context_size)
         return {"replica": resident, "kv_source": None}
 
     def record_turn(self, request_id: str, *, turn_index: int, context_size: float) -> None:
-        """Called after each turn's generation completes (any turn_index) to
-        true up the self-tracked ledger with the ACTUAL context size against
-        the ESTIMATE ``acquire()``/``_book`` already pre-booked for this
-        turn_index (on whichever replica it ended up on, including a
-        mid-conversation migration).
-        """
+        """Record the context size measured after a completed turn."""
         replica = self._resident.get(request_id)
         if replica is None:
             return
@@ -392,11 +301,7 @@ class AdmissionLedger:
         )
 
     def on_trajectory_done(self, request_id: str) -> None:
-        """Release this conversation's ledger entry and feed the growth
-        estimator from its now-fully-observed history - ONLY for use by
-        other, still-in-flight or future conversations (the causal guardrail
-        described on ``GrowthEstimator``).
-        """
+        """Release bookings and feed the estimator with completed-turn growth."""
         replica = self._resident.pop(request_id, None)
         history = self._history.pop(request_id, {})
         self._reserve_charge.pop(request_id, None)
@@ -427,13 +332,7 @@ def compute_budget_tokens_per_replica(
     weights_gb: float | None = None,
     bytes_per_token: float | None = None,
 ) -> float:
-    """Per-GPU KV token budget, same formula validated on-cluster in
-    ``~/work/rl-work/weka-sweep-2026-07-24/CTXC.md`` sec 3:
-    ``(gpu_memory_utilization * gpu_capacity_gb - weights_gb) / bytes_per_token``.
-    All inputs fall back to env vars, then to defaults matching the H200 /
-    Qwen2.5-7B-class setup that dataset was calibrated against - override per
-    model/util via the ``custom.wave_admission_*`` YAML keys.
-    """
+    """Per-GPU KV token budget; args fall back to VERL_WAVE_ADMISSION_* env."""
     if gpu_capacity_gb is None:
         gpu_capacity_gb = _env_float("WAVE_ADMISSION_GPU_CAPACITY_GB", 139.8)
     if gpu_memory_utilization is None:

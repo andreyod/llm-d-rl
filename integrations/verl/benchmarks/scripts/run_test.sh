@@ -53,10 +53,8 @@ if [[ -z "$MODE" ]]; then
 fi
 
 # -- per-mode config -----------------------------------------------------------
-# Each branch only sets which agent-loop manager class to use, (for EPP modes)
-# which EPP config file to mount, and (for the completion-reporting modes)
-# whether to enable epp_report_completion; the actual hydra overrides are
-# assembled once, identically, right after the case statement.
+# Each branch only picks the manager class / EPP config; hydra overrides are
+# assembled once after the case statement.
 AGENT_LOOP_MANAGER_CLASS=""
 EPP_CONFIG_FILE=""
 EPP_REPORT_COMPLETION=""
@@ -82,9 +80,7 @@ case "$MODE" in
   native)
     DEFAULT_NAME="qwen3_4b_grpo_baseline_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
-    # Native verl routing (GlobalRequestLoadBalancer), but with a logging client so
-    # the run produces the same per-request reqlog as EPP, plus the endpoints YAML
-    # for the vLLM /metrics scraper. Routing behaviour is unchanged from stock native.
+    # Stock native routing, plus reqlog + endpoints YAML for the scraper.
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.native_logging.agent_loop_manager.NativeLoggingAgentLoopManager"
     ;;
 
@@ -96,12 +92,8 @@ case "$MODE" in
     ;;
 
   epp-inflight)
-    # EPP routing on the in-flight counter, NO cap (routing only).
-    # epp_report_completion=true keeps the ext_proc stream open through
-    # generation and reports completion, so EPP's inflight-load-producer is
-    # honest and active-request-scorer routes to the least-in-flight endpoint.
-    # Config epp-config-inflight.yaml (inflight-load-producer + active-request-scorer,
-    # no flowControl / no concurrency-detector). Intended for --task weka.
+    # EPP routing on the in-flight counter, no cap. epp_report_completion keeps
+    # the stream open so the counter stays honest.
     DEFAULT_NAME="qwen3_4b_grpo_eppinflight_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
@@ -110,14 +102,8 @@ case "$MODE" in
     ;;
 
   epp-fc)
-    # EPP routing + a per-endpoint concurrency CAP enforced by EPP's flow-control
-    # layer (over-cap requests queued via EnqueueAndWait). "fc" = flow control =
-    # the cap+queue. Builds on epp-inflight's honest in-flight counter
-    # (epp_report_completion=true). The flow-control layer is enabled the
-    # NON-deprecated way: featureGates: [flowControl] inside the config (NOT the
-    # deprecated env var). The cap config is overridable via EPP_CAP_CONFIG
-    # (default epp-config-inflight-cap.yaml) to sweep the cap C without editing
-    # the mode.
+    # EPP routing + a per-endpoint concurrency cap (flow control queues over-cap
+    # requests). Sweep the cap via EPP_CAP_CONFIG.
     DEFAULT_NAME="qwen3_4b_grpo_eppfc_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
@@ -126,28 +112,17 @@ case "$MODE" in
     ;;
 
   wave-admission)
-    # Estimation-gated admission control (no EPP): NEW conversations are
-    # gated by an in-process AdmissionLedger's estimate of per-replica free
-    # KV budget (causal per-turn-index growth estimator, wave1_size
-    # unconditional first admits); sticky placement after admission, no
-    # migration. See wave_admission/admission.py and
-    # ~/.claude/plans/steady-splashing-blanket.md. Tunables (wave1_size, GPU
-    # budget formula inputs, ...) are set via
-    # actor_rollout_ref.rollout.custom.wave_admission_* overrides (EXTRA_HYDRA
-    # below, or pass through EXTRA_OVERRIDES) - defaults match the H200 /
-    # Qwen2.5-7B-class weka ctxc64k_n256 testbed.
+    # Estimation-gated admission (no EPP), sticky after admit. Tunables via
+    # actor_rollout_ref.rollout.custom.wave_admission_* - see wave_admission/.
     DEFAULT_NAME="qwen3_4b_grpo_waveadmission_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
     ;;
 
   wave-admission-p2p)
-    # Wave-admission on the P2P KV-cache-sharing backend: a migration pulls the
-    # resident's KV instead of recomputing it. wave_admission_p2p_kv_available
-    # switches the migrate-worth-it gate to migration_cost_ratio_p2p (~free).
-    # NOTE the P2P tier deadlocks verl's engine sleep(); pass
-    # EXTRA_OVERRIDES="... actor_rollout_ref.rollout.free_cache_engine=false"
-    # to every arm of a comparison (not set here, it changes memory behaviour).
+    # Wave-admission on the P2P backend: a migration pulls the resident's KV.
+    # The P2P tier deadlocks engine sleep(), so pass
+    # free_cache_engine=false via EXTRA_OVERRIDES to EVERY arm of a comparison.
     DEFAULT_NAME="qwen3_4b_grpo_waveadmissionp2p_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.wave_admission.agent_loop_manager.WaveAdmissionAgentLoopManager"
@@ -169,12 +144,8 @@ case "$MODE" in
     ;;
 
   epp-p2p)
-    # P2P KV-cache sharing (llm-d PR #2067) with EPP routing: each replica runs a
-    # local llm-d sidecar (--kv-connector=offloading) that turns EPP's
-    # x-kv-cache-source-host-port header into kv_transfer_params.remote_kv_source.
-    # Every replica both pulls and serves (no PD split). See deploy/epp-config-p2p.yaml.
-    # Override EPP_P2P_CONFIG=epp-config-p2p-load.yaml for the load-only arm.
-    # Same sleep() deadlock caveat as wave-admission-p2p above.
+    # P2P KV-cache sharing with EPP routing: a per-replica sidecar turns EPP's
+    # source header into kv_transfer_params. Same sleep() caveat as above.
     DEFAULT_NAME="qwen3_4b_grpo_eppp2p_tp${TP}_n${N}_${STEPS}s"
     [[ -z "$REQLOG" ]] && REQLOG="on"
     AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager"
@@ -207,22 +178,9 @@ case "$MODE" in
     ;;
 esac
 
-# Hydra overrides common to every routing mode above: the agent-loop manager class
-# and endpoints file are always set; epp_config_file is added only when the mode
-# set one (native has none).
-#
-# trainer.use_v1=true is mandatory here: verl's own default (false) routes through
-# the legacy main_ppo_v0.TaskRunner/RayPPOTrainer, whose _validate() unconditionally
-# constructs and passes a DataProto to async_rollout_manager.generate_sequences().
-# Every llm-d mode's manager class chain (LlmdBaseAgentLoopManager) subclasses verl's
-# AgentLoopManagerTQ (see base_agent_loop_manager.py), whose generate_sequences expects
-# a TensorDict and returns None (real outputs go through TransferQueue) - calling it
-# with a DataProto crashes inside AgentLoopWorkerTQ.generate_sequences with
-# `AttributeError: 'NoneType' object has no attribute 'keys'` (DataProto.pop() called
-# with the wrong signature). TaskRunnerV1 (use_v1=true) is the pipeline actually
-# designed for AgentLoopManagerTQ end-to-end, including validation - not just an
-# unrelated flag; no key prefixed with `+` since trainer.use_v1 already exists in
-# verl's schema.
+# Overrides common to every mode; epp_config_file only when the mode set one.
+# trainer.use_v1=true is mandatory: every llm-d manager subclasses verl's
+# AgentLoopManagerTQ, which only the v1 trainer drives correctly.
 EXTRA_HYDRA="
   trainer.use_v1=true \
   +actor_rollout_ref.rollout.agent.agent_loop_manager_class=${AGENT_LOOP_MANAGER_CLASS}"
@@ -273,11 +231,8 @@ if [[ "$REQLOG" == "on" ]]; then
   +ray_kwargs.ray_init.runtime_env.env_vars.VERL_REQLOG_DIR=/tmp/verl/reqlog${EXTRA_HYDRA}"
 fi
 
-# -- task config: sourced from the self-contained workload folder --------------
-# Each workloads/<name>/task.env sets FSDP_SCRIPT, DEF_MODEL, DEF_PROJECT, DEF_TRAIN,
-# DEF_TEST, DEF_MAXP, DEF_MAXR and the TASK_OVERRIDES array (fully - including any
-# env-var-driven logic like QUALITY_SHUFFLE or the geo3k image sizing). Adding a
-# workload means adding a folder; this driver does not change.
+# -- task config: sourced from workloads/<task>/task.env ------------------------
+# Adding a workload means adding a folder; this driver does not change.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resolve the workloads dir: explicit WORKLOADS_DIR override, else the repo layout
 # (benchmarks/scripts -> ../workloads), else /tmp/workloads (where run_on_head.sh copies

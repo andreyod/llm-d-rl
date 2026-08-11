@@ -11,6 +11,9 @@
 #   ./deploy.sh delete           # delete the cluster (leaves the ConfigMap)
 #   ./deploy.sh configmap        # (re)create the ConfigMap only
 #   ./deploy.sh render           # print the rendered manifest to stdout (no kubectl)
+#   ./deploy.sh apply-sglang     # create ConfigMap + apply the SGLang variant cluster
+#   ./deploy.sh delete-sglang    # delete the SGLang variant cluster (leaves the ConfigMap)
+#   ./deploy.sh render-sglang    # print the rendered SGLang variant manifest (no kubectl)
 #   ./deploy.sh retriever        # apply the BM25 searchr1 retriever (Deployment+Service)
 #   ./deploy.sh retriever-delete # delete the retriever
 #   ./deploy.sh render-retriever # print the rendered retriever manifest (no kubectl)
@@ -38,6 +41,13 @@ render() {
     < ray-cluster.yaml.tmpl
 }
 
+render_sglang() {
+  # SGLang variant: no sidecar (no PD/P2P for SGLang in this mode), scoped var
+  # list same rationale as render() above.
+  envsubst '${NAMESPACE} ${IMG_VERL_SGLANG} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY}' \
+    < ray-cluster-sglang.yaml.tmpl
+}
+
 render_retriever() {
   # BM25 retriever Deployment+Service (searchr1 workload only). Scoped var list so the
   # $-quoted init-container script is left untouched.
@@ -52,6 +62,8 @@ create_configmap() {
   # are the configs for --mode epp-inflight / epp-fc (custom.epp_report_completion).
   kubectl create configmap llmd-epp-configs \
     --from-file=epp-config.yaml=../epp-config.yaml \
+    --from-file=epp-config-p2p.yaml=../epp-config-p2p.yaml \
+    --from-file=epp-config-p2p-load.yaml=../epp-config-p2p-load.yaml \
     --from-file=envoy.yaml=../envoy.yaml \
     --from-file=searchr1_tool_config.yaml=../../benchmarks/workloads/searchr1/tool_config.yaml \
     --from-file=epp-config-inflight.yaml=../epp-config-inflight.yaml \
@@ -66,8 +78,11 @@ case "$ACTION" in
   configmap)         create_configmap ;;
   apply)             create_configmap; render | kubectl apply -f - ;;
   delete)            render | kubectl delete -f - ;;
+  render-sglang)     render_sglang ;;
+  apply-sglang)      create_configmap; render_sglang | kubectl apply -f - ;;
+  delete-sglang)     render_sglang | kubectl delete -f - ;;
   retriever)         render_retriever | kubectl apply -f - ;;
   retriever-delete)  render_retriever | kubectl delete -f - ;;
   render-retriever)  render_retriever ;;
-  *) echo "Unknown action: $ACTION (use apply | delete | configmap | render | retriever | retriever-delete | render-retriever)" >&2; exit 2 ;;
+  *) echo "Unknown action: $ACTION (use apply | delete | configmap | render | apply-sglang | delete-sglang | render-sglang | retriever | retriever-delete | render-retriever)" >&2; exit 2 ;;
 esac

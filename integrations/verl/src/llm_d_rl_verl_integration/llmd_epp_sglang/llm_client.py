@@ -1,16 +1,15 @@
 """LLMServerClient that routes via EPP gRPC, then delegates inference to the
-chosen vLLM actor handle exactly as original verl does.
+chosen SGLang actor handle exactly as original verl does.
 
-Plain EPP:  EPP picks endpoint → call actor.generate.remote() → vLLM handles it.
-PD / P2P:   EPP picks endpoint + sidecar headers → call actor.generate.remote(sidecar_headers=...)
-            → PDDecodeVLLMHttpServer / P2PVLLMHttpServer.generate() → HTTP to local sidecar.
+EPP picks endpoint -> call actor.generate.remote() -> SGLang handles it.
+No PD/P2P sidecar dispatch in this mode.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 import ray
 
@@ -22,7 +21,7 @@ from llm_d_rl_common.reqlog import log_request, open_reqlog, phash
 logger = logging.getLogger(__name__)
 
 
-class EPPLLMClient(LLMServerClient):
+class SglangEPPLLMClient(LLMServerClient):
     """Routes each request through EPP gRPC to pick a server, then calls
     that server's Ray actor directly — same as original verl flow.
 
@@ -35,9 +34,6 @@ class EPPLLMClient(LLMServerClient):
             at startup. server_address must match what EPP returns as the
             ``x-gateway-destination-endpoint`` header.
         model_name: model identifier sent in the EPP request body.
-        use_sidecar: if True, forward sidecar_headers returned by EPP to
-            actor.generate.remote() so the actor's local sidecar (PD's
-            PDDecodeVLLMHttpServer or P2P's P2PVLLMHttpServer) can reach it.
         report_completion: passed to ``EPPGrpcClient.route()`` as
             ``track_completion``. If True, EPP's in-flight counter reflects the
             real generation window instead of the pick-time snapshot. Needed for
@@ -56,7 +52,6 @@ class EPPLLMClient(LLMServerClient):
         grpc_addr: str,
         address_to_handle: dict[str, ray.actor.ActorHandle],
         model_name: str,
-        use_sidecar: bool = False,
         report_completion: bool = False,
         **kwargs,
     ):
@@ -64,7 +59,6 @@ class EPPLLMClient(LLMServerClient):
         self._grpc_addr = grpc_addr
         self._address_to_handle = address_to_handle
         self._model_name = model_name
-        self._use_sidecar = use_sidecar
         self._report_completion = report_completion
         self._epp_client = None  # created on workers after unpickling via __setstate__
 
@@ -93,7 +87,7 @@ class EPPLLMClient(LLMServerClient):
             self._model_name, prompt_ids, str(request_id),
             track_completion=self._report_completion,
         )
-        endpoint, sidecar_headers = result.endpoint, result.sidecar_headers
+        endpoint, _sidecar_headers = result.endpoint, result.sidecar_headers
         t_pick = time.monotonic()
 
         if endpoint is None:
@@ -108,9 +102,15 @@ class EPPLLMClient(LLMServerClient):
                 f"Known: {list(self._address_to_handle.keys())}"
             )
 
-        extra_kwargs: dict[str, Any] = {}
-        if self._use_sidecar and sidecar_headers:
-            extra_kwargs["sidecar_headers"] = sidecar_headers
+        # SGLangHttpServer.generate() (verl/workers/rollout/sglang_rollout/async_sglang_server.py)
+        # accepts only prompt_ids/sampling_params/request_id/image_data/video_data plus its own
+        # PD bootstrap_* kwargs - unlike vLLM's server, it has no **kwargs catch-all. verl's
+        # AgentLoopWorkerTQ calls every LLMServerClient.generate() with a fixed multimodal kwarg
+        # set (e.g. audio_data, mm_processor_kwargs) regardless of backend, so silently drop
+        # whatever SGLang's actor doesn't declare rather than erroring on every request.
+        kwargs.pop("audio_data", None)
+        kwargs.pop("mm_processor_kwargs", None)
+        kwargs.pop("priority", None)
 
         out = None
         try:
@@ -120,7 +120,7 @@ class EPPLLMClient(LLMServerClient):
                 request_id=request_id,
                 image_data=image_data,
                 video_data=video_data,
-                **extra_kwargs,
+                **kwargs,
             )
             return out
         finally:

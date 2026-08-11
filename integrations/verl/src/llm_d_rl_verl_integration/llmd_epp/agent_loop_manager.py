@@ -22,7 +22,7 @@ To use, set in the training YAML config:
   PD disaggregated (llm-d vllm):
     actor_rollout_ref:
       rollout:
-        name: vllm-llmd-pd          # registers PDEngineReplicaFactory at import time
+        name: vllm-llmd-pd          # needs model.external_lib=...register_pd
         disaggregation:
           prefill_replicas: 2       # do NOT set enabled=True (avoids NotImplementedError from verl)
           decode_replicas: 2
@@ -32,6 +32,16 @@ To use, set in the training YAML config:
           epp_config_file: /path/to/epp-config.yaml
           epp_endpoints_file: /tmp/epp-endpoints.yaml
           sidecar_connector: nixlv2
+
+  P2P KV-cache sharing (llm-d vllm, aggregated - every replica both pulls and serves):
+    actor_rollout_ref:
+      rollout:
+        name: vllm-llmd-p2p         # needs model.external_lib=...register_p2p
+        agent:
+          agent_loop_manager_class: llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager
+        custom:
+          epp_config_file: /path/to/epp-config-p2p.yaml
+          epp_endpoints_file: /tmp/epp-endpoints.yaml
 """
 
 from __future__ import annotations
@@ -45,16 +55,11 @@ from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopM
 from llm_d_rl_verl_integration.llmd_actor import LlmdActor
 from llm_d_rl_verl_integration.llmd_epp.llm_client import EPPLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
-from verl.workers.rollout.replica import RolloutReplicaRegistry
-from llm_d_rl_verl_integration.pd_replica import PDEngineReplicaFactory
 
-
-def _load_llmd_pd():
-    return PDEngineReplicaFactory
-
-
-# Register vllm-llmd-pd at import time — this module is imported before
-RolloutReplicaRegistry.register("vllm-llmd-pd", _load_llmd_pd)
+# No pd_replica / p2p_replica import here: both import vLLM at module scope, which
+# would make this module (and any subclass of it, e.g. the SGLang variant) need
+# vLLM installed. register_pd.py / register_p2p.py own those registrations and
+# import them lazily; both are loaded via model.external_lib for PD/P2P runs.
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +79,12 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
         endpoints_file = custom.get("epp_endpoints_file")
 
         # Detect PD mode by backend name (not disaggregation.enabled, which we
-        # intentionally leave False to avoid verl's sglang-only guard).
+        # intentionally leave False to avoid verl's sglang-only guard). P2P mode
+        # is detected the same way; unlike PD it has no role split, so it never
+        # calls infer_roles() and server_roles stays None (LlmdActor.start() then
+        # takes the plain write_rollout_endpoints() path, same as non-sidecar EPP).
         self._pd_mode = rollout_cfg.name == "vllm-llmd-pd"
+        self._p2p_mode = rollout_cfg.name == "vllm-llmd-p2p"
 
         server_roles = None
         if self._pd_mode:
@@ -123,7 +132,11 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
             grpc_addr=self._grpc_addr,
             address_to_handle=self._address_to_handle,
             model_name=self._model_name,
-            pd_mode=self._pd_mode,
+            # Both PD and P2P dispatch to a Ray actor whose generate() HTTP-calls a
+            # local sidecar and needs EPP's response headers forwarded to build that
+            # request; plain (non-sidecar) EPP mode calls the vLLM actor directly and
+            # ignores sidecar_headers regardless of this flag.
+            use_sidecar=self._pd_mode or self._p2p_mode,
             report_completion=bool(custom.get("epp_report_completion", False)),
         )
 

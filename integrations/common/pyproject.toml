@@ -13,6 +13,11 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.scripts]
+# Foreground EPP/Envoy launcher, for frameworks that start the router stack from
+# a pod lifecycle hook rather than from inside the training process.
+llm-d-rl-router = "llm_d_rl_common.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["llm_d_rl_common*"]

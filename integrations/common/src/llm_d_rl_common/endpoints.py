@@ -48,26 +48,35 @@ def write_rollout_endpoints(
     path: str,
     server_addresses: list[str],
     model_config: Any = None,
+    engine_type: str = "vllm",
 ) -> None:
     """Write standard (non-PD) endpoints YAML.
 
-    Each replica gets ``name: vllm-replica-{i}`` and ``rankIndex: i``.
-    ``model_config`` is optional; if omitted the ``model`` label is not written.
+    Each replica gets ``name: {engine_type}-replica-{i}`` and ``rankIndex: i``.
+    The ``llm-d.ai/engine-type`` label tells EPP's metrics extractor which
+    Prometheus metric-name mapping to use (vllm/sglang/trtllm-serve/...);
+    defaults to "vllm" to preserve existing behaviour for callers that don't
+    pass it. ``model_config`` is optional; if omitted the ``model`` label is
+    not written.
     """
     if not path or not server_addresses:
         return
+    label = model_label(model_config) if model_config is not None else None
     entries = []
     for i, addr in enumerate(server_addresses):
         host, port = split_address(addr)
-        entry: dict[str, Any] = {
-            "name": f"vllm-replica-{i}",
+        labels: dict[str, str] = {}
+        if label is not None:
+            labels["model"] = label
+        labels["llm-d.ai/engine-type"] = engine_type
+        entries.append({
+            "name": f"{engine_type}-replica-{i}",
             "address": host,
             "port": port,
             "rankIndex": i,
-        }
-        if model_config is not None:
-            entry["labels"] = {"model": model_label(model_config)}
-        entries.append(entry)
+            "labels": labels,
+        })
+
     _atomic_write(path, entries)
     logger.info("Wrote %d endpoints to %s", len(entries), path)
 

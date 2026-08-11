@@ -2,7 +2,7 @@
 # Deploy (or tear down) the vime KubeRay cluster using the single config in
 # deploy.env. Renders ray-cluster.yaml.tmpl with the image refs and namespace,
 # builds the llmd-epp-configs-vime ConfigMap from the standalone config files,
-# and applies both — images and namespace are defined in exactly one place.
+# and applies both - images and namespace are defined in exactly one place.
 #
 # Usage:
 #   ./deploy.sh                  # create ConfigMap + apply the cluster
@@ -33,10 +33,16 @@ render() {
 }
 
 create_configmap() {
-  # Include router_shim.py and submit-training.sh so they are available on the
-  # head pod at /etc/llmd-configs/ without a git clone at runtime.
+  # Puts the EPP config, the Envoy config and the run script on the head pod at
+  # /etc/llmd-configs/ without a git clone at runtime.
+  #
+  # epp-config.yaml comes from the verl tree: the scorer config is engine- and
+  # framework-agnostic, and a second copy silently drifts (the two copies had
+  # already diverged on which EPP build they were tested against). Phase 2 of the
+  # restructure moves it to a shared deploy/ directory; until then, one file with
+  # an awkward path beats two files with the same contents.
   kubectl create configmap llmd-epp-configs-vime \
-    --from-file=epp-config.yaml=../epp-config.yaml \
+    --from-file=epp-config.yaml=../../../verl/deploy/epp-config.yaml \
     --from-file=envoy.yaml=../envoy.yaml \
     --from-file=run-qwen3-4B.sh=./run-qwen3-4B.sh \
     --namespace "$NAMESPACE" \

@@ -37,6 +37,13 @@ def split_address(server_address: str) -> tuple[str, str]:
 
 
 def _atomic_write(path: str, entries: list[dict[str, Any]]) -> None:
+    """Replace the endpoints file with exactly `entries`.
+
+    A full replace, not a merge, so removing an endpoint from the list removes it
+    from the file. That makes this SINGLE-WRITER only: every caller must own the
+    whole list. Two processes writing the same path will clobber each other (an
+    earlier version merged under an flock; deletion support replaced it).
+    """
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -58,8 +65,13 @@ def write_rollout_endpoints(
     defaults to "vllm" to preserve existing behaviour for callers that don't
     pass it. ``model_config`` is optional; if omitted the ``model`` label is
     not written.
+
+    An empty ``server_addresses`` writes an empty list rather than doing nothing:
+    a registry-style caller (see vime's router_shim) needs the last endpoint's
+    removal to actually reach the file, or EPP keeps routing to an engine that is
+    gone.
     """
-    if not path or not server_addresses:
+    if not path:
         return
     label = model_label(model_config) if model_config is not None else None
     entries = []

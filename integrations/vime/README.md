@@ -19,11 +19,11 @@ The shim (`vime-router-shim`) is the only custom component in this stack. Envoy 
 
 | Method | Path | Called by | Description |
 |--------|------|-----------|-------------|
-| `POST` | `/workers` | vLLM engine on startup | Register an engine. Idempotent — same URL returns the existing ID. |
+| `POST` | `/workers` | vLLM engine on startup | Register an engine. Idempotent - same URL returns the existing ID. |
 | `GET` | `/workers` | vime `abort()` | List all registered engines. |
 | `DELETE` | `/workers/{ref}` | vLLM engine on shutdown | Deregister an engine. `{ref}` is the percent-encoded engine URL. |
 
-`POST /workers` body: `{"url": "http://host:port"}` → `{"url": "http://host:port"}`. (`worker_type` is optional — used by vime for prefill/decode disaggregation; defaults to `"regular"`.)
+`POST /workers` body: `{"url": "http://host:port"}` -> `{"url": "http://host:port"}`. (`worker_type` is optional - used by vime for prefill/decode disaggregation; defaults to `"regular"`.)
 
 On every change the shim atomically rewrites `/tmp/epp-endpoints.yaml` (configurable via `--endpoints-file`). EPP's `file-discovery` plugin watches that file and picks up the new endpoint list immediately.
 
@@ -38,5 +38,5 @@ The only change from a standard vime run is two extra flags on `train.py`:
 
 ## Get started
 
-- **[deploy/README.md](deploy/README.md)** — general deployment guide: install, binaries, config, run. Works on any Ray cluster.
-- **[deploy/kuberay/README.md](deploy/kuberay/README.md)** — complete end-to-end KubeRay example: cluster manifest, configs, and scripts for deploy and train.
+- **[deploy/README.md](deploy/README.md)** - general deployment guide: install, binaries, config, run. Works on any Ray cluster.
+- **[deploy/kuberay/README.md](deploy/kuberay/README.md)** - complete end-to-end KubeRay example: cluster manifest, configs, and scripts for deploy and train.

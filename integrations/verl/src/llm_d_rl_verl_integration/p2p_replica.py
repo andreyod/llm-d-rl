@@ -29,12 +29,16 @@
 # the specific unconfirmed assumption (which port a peer's P2P listener is
 # actually reachable on).
 #
-# IMPORTANT (2026-08-10): the sidecar path can only ever pull from rank 0 in this
-# repo's topology (N replicas sharing one pod/network namespace) - the sidecar
-# advertises a single flat P2P port while vLLM must bind rank r at base+r. See
-# _launch_sidecar()'s comment for the full reasoning and why the sidecar's own
-# --data-parallel-size rank-decoding mode cannot be used here. VERL_P2P_NOSIDECAR
-# is the only path in this repo that can address every rank correctly.
+# PEER ADDRESSING (changed 2026-08-11): replicas are separated by IP, not port.
+# Each replica's P2P control socket binds its own loopback alias
+# (p2p_addressing.p2p_listener_host: 127.0.7.<rank+1>) on the FLAT base port
+# 7777. This matters because the sidecar keeps only the HOST from our
+# x-kv-cache-source-host-port header and replaces the port with its single
+# --p2p-connector-port, so while replicas were separated by port every
+# sidecar-mediated pull was aimed at rank 0 - missing, or dialling itself and
+# raising NIXL_ERR_INVALID_PARAM. Separated by IP, one flat port is correct and
+# BOTH paths (sidecar and VERL_P2P_NOSIDECAR) address peers correctly with no
+# change to the sidecar's Go source. Single-node only - see p2p_addressing.py.
 #
 # Both paths ALSO require kv_connector_extra_config to set
 # spec_name=TieringOffloadingSpec and secondary_tiers=[{type:p2p}] (run_test.sh
@@ -55,6 +59,10 @@ from verl.workers.rollout.replica import TokenOutput
 from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
 
 from llm_d_rl_common.endpoints import model_label as model_label_for_epp
+from llm_d_rl_verl_integration.p2p_addressing import (
+    DEFAULT_P2P_CONNECTOR_PORT,
+    p2p_listener_host,
+)
 from llm_d_rl_verl_integration.pd_replica import (
     _SIDECAR_BINARY,
     _find_free_port,
@@ -64,7 +72,10 @@ from llm_d_rl_verl_integration.pd_replica import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_P2P_CONNECTOR_PORT = 7777
+# Shared with wave_admission/admission.py, which must derive the SAME address
+# when it names a migration's source - see p2p_addressing.py for the full
+# rationale (one IP per replica, flat port, single-node only).
+_DEFAULT_P2P_CONNECTOR_PORT = DEFAULT_P2P_CONNECTOR_PORT
 
 
 class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
@@ -72,23 +83,21 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         # vLLM's OWN P2P-tier listener (vllm/v1/kv_offload/tiering/p2p/manager.py,
         # only reachable when kv_connector_extra_config sets spec_name=
         # TieringOffloadingSpec + secondary_tiers=[{type:p2p}] - see run_test.sh)
-        # defaults to VLLM_P2P_SIDE_CHANNEL_HOST="localhost"/PORT=5710, neither
-        # of which is right here: (1) host must be the real node IP, matching
-        # what admission.py's kv_source already uses to address this replica -
-        # "localhost" would silently never be reachable by a peer dialing the
-        # node IP: mirrors NIXL's own VLLM_NIXL_SIDE_CHANNEL_HOST pattern right
-        # below. (2) port must be offset by replica_rank: all N replicas here
-        # are independent engines sharing ONE pod/network-namespace (unlike the
-        # llm-d reference guide's one-pod-per-replica topology, where distinct
-        # pod IPs make a single shared port harmless) - without a per-replica
-        # offset every replica's listener would collide on the same port.
-        # admission.py encodes this SAME base+rank scheme into kv_source, so the
-        # two agree on the VERL_P2P_NOSIDECAR path. The SIDECAR path cannot be
-        # made to agree - see _launch_sidecar()'s warning for why (it advertises
-        # a flat port, and its rank-decoding mode is unusable in this topology).
-        p2p_port = self._p2p_listener_port()
-        os.environ["VLLM_P2P_SIDE_CHANNEL_HOST"] = self._server_address
-        os.environ["VLLM_P2P_SIDE_CHANNEL_PORT"] = str(p2p_port)
+        # defaults to VLLM_P2P_SIDE_CHANNEL_HOST="localhost"/PORT=5710, and both
+        # need overriding: bind a per-replica loopback alias (see
+        # p2p_listener_host()) on the FLAT base port, so a peer is identified by
+        # IP rather than by port. admission.py builds kv_source from the same
+        # helper, so the two agree on BOTH the sidecar and nosidecar paths.
+        #
+        # Only the ZMQ CONTROL identity is affected. vLLM keeps two decoupled
+        # identities (manager.py's `_local_id` vs `_nixl_agent_name`): the KV
+        # bytes move over NixlTransport, addressed by VLLM_NIXL_SIDE_CHANNEL_HOST
+        # (still the node IP, set by PD's launch_server below) and a per-process
+        # uuid agent name, with transport chosen from UCX_TLS
+        # (cuda_ipc first -> same-host GPU-to-GPU IPC). So this does not move the
+        # data path onto loopback, and Ray is untouched entirely.
+        os.environ["VLLM_P2P_SIDE_CHANNEL_HOST"] = p2p_listener_host(self.replica_rank)
+        os.environ["VLLM_P2P_SIDE_CHANNEL_PORT"] = str(self._p2p_listener_port())
         await super().launch_server(
             master_address=master_address, master_port=master_port, dp_rpc_port=dp_rpc_port,
         )
@@ -96,13 +105,11 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
     def _p2p_listener_port(self) -> int:
         """The port vLLM's own P2P tier binds on THIS replica.
 
-        Per-replica offset is mandatory, not a choice: every replica here is an
-        independent engine process inside ONE pod/network namespace, so a single
-        flat port cannot be bound more than once. (The llm-d reference guide's
-        one-pod-per-replica topology has a distinct pod IP per replica, which is
-        why a flat port is fine there and why nothing upstream needs this.)
+        FLAT across replicas (no rank offset): replicas are separated by IP now,
+        see p2p_listener_host(). A flat port is what upstream assumes and what
+        the sidecar's single --p2p-connector-port can express.
         """
-        return _DEFAULT_P2P_CONNECTOR_PORT + self.replica_rank
+        return int(os.environ.get("VERL_P2P_CONNECTOR_PORT", _DEFAULT_P2P_CONNECTOR_PORT))
 
     @staticmethod
     def _nosidecar() -> bool:
@@ -127,46 +134,27 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         sidecar_log_level = os.environ.get("VERL_SIDECAR_LOG_LEVEL", "1")
         vllm_port = self._server_port
         self._sidecar_port = _find_free_port()
-        p2p_port = int(os.environ.get("VERL_P2P_CONNECTOR_PORT", _DEFAULT_P2P_CONNECTOR_PORT))
-        # KNOWN, UNFIXABLE-FROM-HERE LIMITATION of the sidecar path in this
-        # topology: --p2p-connector-port is a single FLAT value that the sidecar
-        # injects as remote_port for every P2P source it is asked about, while
-        # vLLM necessarily binds rank r at p2p_port+r here (see
-        # _p2p_listener_port()). So a pull whose true source is rank s>0 is told
-        # to dial rank 0's tier, where it misses and silently falls back to a
-        # full recompute. Only rank 0 can actually serve a sidecar-mediated pull.
+        p2p_port = self._p2p_listener_port()
+        # Why a single FLAT --p2p-connector-port is now CORRECT here.
         #
-        # The sidecar DOES have rank-decoding logic, and it is unusable here.
-        # Read from its source (pkg/sidecar/proxy/{connector_p2p,data_parallel,
-        # proxy}.go): p2pPortFor() returns the flat base unless
-        # --data-parallel-size > 1, in which case it returns
-        # base + (target_sidecar_port - dpBasePort) where dpBasePort is THIS
-        # sidecar's own --port. That mode assumes ONE sidecar per pod which
-        # clones itself across contiguous ports (startDataParallel() binds
-        # --port+1 .. --port+N-1 and proxies clone r to vLLM port
-        # <vllm-port>+r). Two hard mismatches with this repo: (1) we run N
-        # SEPARATE sidecars, one per replica, so passing --data-parallel-size=N
-        # would make every one of them spawn N-1 clones and collide on the same
-        # ports; (2) that mode requires CONTIGUOUS vLLM ports, but _server_port
-        # is assigned per replica by verl's own vLLMHttpServer, not by us.
-        # Adopting it would mean one sidecar owning all N replicas plus taking
-        # over verl's port assignment - a restructure of the shared PD-derived
-        # launch path, not a flag.
+        # The sidecar injects this one value as remote_port for every P2P source
+        # it is asked about, and it DISCARDS the port in our
+        # x-kv-cache-source-host-port header - read from its source
+        # (pkg/sidecar/proxy/connector_p2p.go): p2pSourceParams() keeps only
+        # extractHost(source) and overwrites the port with p2pPortFor(), which
+        # short-circuits to the flat base whenever --data-parallel-size <= 1.
+        # So the sidecar can only ever name peers by HOST.
         #
-        # Practical consequence: use VERL_P2P_NOSIDECAR for any run that needs
-        # correct per-rank pulls. That path builds kv_transfer_params itself with
-        # the true source's base+rank port (admission.py's _p2p_direct_port) and
-        # never consults this rank-math at all.
-        logger.warning(
-            "P2P sidecar mode on replica %s: this sidecar will advertise a FLAT "
-            "remote_port=%s for every P2P source, but vLLM binds rank r at %s+r "
-            "in this shared-network-namespace topology (this replica: %s). Only "
-            "rank 0 can serve a sidecar-mediated pull; a source on any other "
-            "rank misses and silently recomputes. Set VERL_P2P_NOSIDECAR=enabled "
-            "for correct per-rank pulls.",
-            self.replica_rank, p2p_port, _DEFAULT_P2P_CONNECTOR_PORT,
-            self._p2p_listener_port(),
-        )
+        # That used to be fatal, because we separated replicas by PORT
+        # (base+rank on one shared pod IP): every pull was aimed at rank 0,
+        # missed, and silently recomputed - and when the destination WAS rank 0
+        # it dialled itself, producing NIXL_ERR_INVALID_PARAM / "remote agent
+        # name same as local agent". Replicas are now separated by IP instead
+        # (see p2p_listener_host()), so host alone identifies a peer and the
+        # flat port is exactly right. This is also why the sidecar's
+        # --data-parallel-size rank-decoding mode is no longer needed - which is
+        # just as well, since enabling it makes every sidecar spawn N-1 clones
+        # (startDataParallel()) that collide on their siblings' ports.
         cmd = [
             _SIDECAR_BINARY,
             f"--port={self._sidecar_port}",
@@ -179,8 +167,26 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         log_path = f"/tmp/sidecar-p2p-{self.replica_rank}.log"
         logger.info("Launching llm-d routing sidecar (P2P): %s (log: %s)", " ".join(cmd), log_path)
         self._sidecar_log = open(log_path, "w")
+        # POD_IP is REQUIRED for the sidecar to recognise itself as the KV source
+        # and skip the pull - it is not optional decoration. From its source
+        # (pkg/sidecar/proxy/connector_p2p.go): `self := normalizeEndpoint(
+        # net.JoinHostPort(os.Getenv("POD_IP"), s.config.Port))`, and a request
+        # whose source == self is dispatched normally instead of running the P2P
+        # source protocol. With POD_IP unset, `self` degenerates to ":<port>",
+        # matches nothing, and the sidecar happily asks a replica to pull from
+        # ITSELF - which surfaces as NIXL_ERR_INVALID_PARAM / "remote agent name
+        # same as local agent" and appears to hang the request. The reference
+        # guide (llm-d PR #2067's patch-sidecar.yaml) sets POD_IP for exactly
+        # this reason ("POD_IP lets the sidecar recognize itself as the source
+        # and skip self-pulls"); we never did.
+        #
+        # Note `self` is IP *and this sidecar's own port*, so with N sidecars per
+        # pod on distinct ports the comparison still discriminates correctly -
+        # sharing one pod IP does not break it.
+        sidecar_env = dict(os.environ)
+        sidecar_env["POD_IP"] = self._server_address
         self._sidecar_process = subprocess.Popen(
-            cmd, stdout=self._sidecar_log, stderr=subprocess.STDOUT
+            cmd, stdout=self._sidecar_log, stderr=subprocess.STDOUT, env=sidecar_env
         )
 
     def get_server_address(self):

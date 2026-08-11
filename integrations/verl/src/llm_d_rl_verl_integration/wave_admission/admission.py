@@ -21,6 +21,8 @@ import time
 
 import ray
 
+from llm_d_rl_verl_integration.p2p_addressing import p2p_listener_host
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,18 +186,14 @@ class AdmissionLedger:
         self._p2p_kv_available = p2p_kv_available
         self._p2p_connector_port = p2p_connector_port
         self._migration_cost_ratio_p2p = migration_cost_ratio_p2p
-        # p2p_nosidecar: kv_source must carry vLLM's OWN P2P-tier listener port,
-        # which p2p_replica.py's launch_server() sets to p2p_direct_port (base,
-        # default 7777, matching the llm-d reference guide's convention - NOT
-        # vllm.envs.VLLM_P2P_SIDE_CHANNEL_PORT's own unrelated default of 5710)
-        # PLUS that replica's own rank (self._replicas.index(...) below) - every
-        # replica here shares one node/network-namespace (unlike the reference
-        # guide's one-pod-per-replica topology), so a flat, unoffset port would
-        # collide across all of them. p2p_connector_port (also 7777 by default,
-        # a DIFFERENT, sidecar-only setting) is used instead when going through
-        # the sidecar, which has its own separate, incompatible rank-offset
-        # scheme - see p2p_replica.py's _launch_sidecar() for why that one is
-        # deliberately NOT engaged.
+        # kv_source addresses the source replica by its own P2P loopback IP
+        # (p2p_addressing.p2p_listener_host) on a FLAT port - the same scheme for
+        # both the sidecar and nosidecar paths, since replicas are separated by
+        # IP rather than by port. p2p_direct_port (nosidecar) and
+        # p2p_connector_port (sidecar, must match the sidecar's own
+        # --p2p-connector-port) both default to 7777 and are normally equal; two
+        # keys are kept only so an operator can diverge them if a deployment
+        # ever needs to.
         self._p2p_nosidecar = p2p_nosidecar
         self._p2p_direct_port = p2p_direct_port
 
@@ -376,17 +374,24 @@ class AdmissionLedger:
                 self._book(request_id, target, turn_index, context_size)
                 kv_source = None
                 if self._p2p_kv_available:
-                    resident_host = resident.rsplit(":", 1)[0]
-                    if self._p2p_nosidecar:
-                        # Must match p2p_replica.py's launch_server(): vLLM's own
-                        # P2P listener on `resident` binds to p2p_direct_port +
-                        # resident's own rank (its index in the same ordered
-                        # replicas list every AgentLoopManager builds
-                        # server_addresses from - see agent_loop_manager.py).
-                        port = self._p2p_direct_port + self._replicas.index(resident)
-                    else:
-                        port = self._p2p_connector_port
-                    kv_source = f"{resident_host}:{port}"
+                    # Address the source replica by its own P2P loopback IP on a
+                    # FLAT port - identical for the sidecar and nosidecar paths,
+                    # which is the point of separating replicas by IP rather
+                    # than by port (see p2p_replica.p2p_listener_host()).
+                    #
+                    # The index must be the resident's rank: its position in the
+                    # same ordered replicas list every AgentLoopManager builds
+                    # server_addresses from (see agent_loop_manager.py), which is
+                    # also the replica_rank p2p_replica.py binds with. Note we
+                    # deliberately IGNORE resident's own host:port here - that is
+                    # its HTTP dispatch address (node IP + sidecar/vLLM port),
+                    # a different namespace from the P2P control socket.
+                    port = (
+                        self._p2p_direct_port
+                        if self._p2p_nosidecar
+                        else self._p2p_connector_port
+                    )
+                    kv_source = f"{p2p_listener_host(self._replicas.index(resident))}:{port}"
                 logger.info(
                     "[AdmissionLedger] migrated %s: %s -> %s at turn %d "
                     "(deficit %.0f >= %.2fx migration cost %.0f, kv_source=%s)",

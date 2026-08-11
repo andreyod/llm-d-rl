@@ -235,10 +235,22 @@ case "$MODE" in
     # alone only reaches the later _ROLLOUT_REGISTRY lookup, not this earlier one.
     # cpu_bytes_to_use: the ONLY strictly-required kv_connector_extra_config key
     # (vllm/v1/kv_offload/cpu/spec.py raises if unset - everything else there has
-    # a default). 4GiB per replica x n_gpus_per_node=8 replicas = 32GiB host RAM,
-    # comfortably inside this cluster's node RAM; not tuned/sized from measured
-    # KV capacity, just a safe smoke-test default. Override via
-    # P2P_CPU_BYTES_TO_USE for a real sizing pass.
+    # a default).
+    #
+    # !!! THE 4GiB DEFAULT IS FAR TOO SMALL FOR LONG CONTEXTS AND SILENTLY
+    # DESTROYS THE P2P HIT RATE. Measured 2026-08-11: Qwen2.5-7B-Instruct-1M is
+    # 28 layers x 4 KV heads x 128 head_dim x 2 (K+V) x 2 (bf16) = 57344 B/token,
+    # so ONE 64K-token conversation needs 3.42 GiB and a 4GiB tier holds just
+    # 1.17 of them. A source's offloaded blocks are therefore evicted almost
+    # immediately, long before any migration asks to pull them - observed as a
+    # 3-6% pull rate plus a wildly asymmetric 211 GB stored / 3.67 MB loaded per
+    # replica (a thrashing cache, not a working one).
+    # llm-d PR #2067's reference patch-vllm.yaml states the rule: size this "at
+    # least as large as the per-pod GPU KV cache", and uses 88 GiB per replica.
+    # Override via P2P_CPU_BYTES_TO_USE. NOTE the real ceiling here is /dev/shm
+    # (the tier is mmap'd as /dev/shm/vllm_offload_*.mmap), so
+    # n_replicas x cpu_bytes_to_use must fit in it - see deploy/kuberay/
+    # ray-cluster.yaml.tmpl's `dshm` sizeLimit, not host RAM.
     #
     # spec_name + secondary_tiers: WITHOUT BOTH OF THESE THERE IS NO P2P TIER AT
     # ALL, and the omission is silent. vllm/v1/kv_offload/factory.py's create_spec()

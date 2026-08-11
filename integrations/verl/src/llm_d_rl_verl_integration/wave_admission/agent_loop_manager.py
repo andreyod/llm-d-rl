@@ -33,7 +33,7 @@ To use, set in the training YAML config:
           wave_admission_p2p_connector_port: 7777             # optional, must match P2PVLLMHttpServer's --p2p-connector-port
           wave_admission_migration_cost_ratio_p2p: 0.0        # optional, default 0.0 (benchmarking assumption: ~free P2P pull)
           wave_admission_p2p_nosidecar: false                 # optional, default false - EXPERIMENTAL, not live-validated (see p2p_replica.py's _generate_direct() docstring); bypasses the sidecar and calls vLLM's native endpoint directly
-          wave_admission_p2p_direct_port: 5710                # optional, only used when p2p_nosidecar=true; must match vLLM's own VLLM_P2P_SIDE_CHANNEL_PORT (default 5710), NOT wave_admission_p2p_connector_port
+          wave_admission_p2p_direct_port: 7777                # optional, default 7777; only used when p2p_nosidecar=true. vLLM's P2P tier binds this FLAT port on a per-replica loopback IP (see p2p_addressing.py), so it normally equals wave_admission_p2p_connector_port
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ import ray
 from omegaconf import OmegaConf
 
 from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopManager
+from llm_d_rl_verl_integration.p2p_addressing import DEFAULT_P2P_CONNECTOR_PORT
 from llm_d_rl_verl_integration.wave_admission.admission import (
     AdmissionLedger,
     compute_budget_tokens_per_replica,
@@ -106,7 +107,12 @@ class WaveAdmissionAgentLoopManager(LlmdBaseAgentLoopManager):
         p2p_connector_port = int(_custom_get(custom, "wave_admission_p2p_connector_port", 7777))
         migration_cost_ratio_p2p = float(_custom_get(custom, "wave_admission_migration_cost_ratio_p2p", 0.0))
         p2p_nosidecar = bool(_custom_get(custom, "wave_admission_p2p_nosidecar", False))
-        p2p_direct_port = int(_custom_get(custom, "wave_admission_p2p_direct_port", 5710))
+        # Default 7777 (DEFAULT_P2P_CONNECTOR_PORT), NOT vLLM's own 5710: with
+        # replicas separated by loopback IP the tier binds the flat llm-d/sidecar
+        # convention port on every replica - see p2p_addressing.py.
+        p2p_direct_port = int(
+            _custom_get(custom, "wave_admission_p2p_direct_port", DEFAULT_P2P_CONNECTOR_PORT)
+        )
         # Read by _create_llm_client() below, which has no access to `custom`.
         self._p2p_nosidecar = p2p_nosidecar
 

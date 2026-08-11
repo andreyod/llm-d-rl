@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 import ray
 
@@ -77,6 +77,17 @@ class EPPLLMClient(LLMServerClient):
         # see NativeLogging twin. 0-based turn index per trajectory (0 for single-turn).
         self._turn_counts: dict[str, int] = {}
 
+    def _actor_kwargs(self, sidecar_headers, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Extra kwargs for actor.generate.remote() - the one backend-specific seam.
+
+        vLLM: forward EPP's sidecar headers when the actor has a local sidecar (PD /
+        P2P). Nothing else is forwarded: vLLMHttpServer.generate() declares an
+        explicit parameter list with no **kwargs, so an unknown key raises.
+        """
+        if self._use_sidecar and sidecar_headers:
+            return {"sidecar_headers": sidecar_headers}
+        return {}
+
     async def generate(
         self,
         request_id,
@@ -108,9 +119,7 @@ class EPPLLMClient(LLMServerClient):
                 f"Known: {list(self._address_to_handle.keys())}"
             )
 
-        extra_kwargs: dict[str, Any] = {}
-        if self._use_sidecar and sidecar_headers:
-            extra_kwargs["sidecar_headers"] = sidecar_headers
+        extra_kwargs = self._actor_kwargs(sidecar_headers, kwargs)
 
         out = None
         try:

@@ -9,11 +9,9 @@ registries have the "vllm-llmd-p2p" entry before anything looks it up:
     worker model-config instantiation (HFModelConfig etc.) - before FSDP workers
     call get_rollout_class().
   - RolloutReplicaRegistry (verl.workers.rollout.replica): consulted later, when
-    TaskRunnerV1 actually launches the replica servers - this happens BEFORE
-    llmd_epp.agent_loop_manager gets imported (that module's own identical
-    RolloutReplicaRegistry.register call is too late to matter for this lookup;
-    kept there too since it's a harmless duplicate registration, not the
-    authoritative one).
+    TaskRunnerV1 actually launches the replica servers. This module is the only
+    place that registers it; llmd_epp.agent_loop_manager used to as well, too late
+    to matter and at the cost of importing vLLM eagerly, and no longer does.
 
 In the run script:
     actor_rollout_ref.model.external_lib=llm_d_rl_verl_integration.register_p2p

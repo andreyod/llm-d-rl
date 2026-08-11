@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|epp-p2p|epp-sglang|wave-admission|llm-d>  [options]
+# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|epp-p2p|epp-sglang|wave-admission|wave-admission-p2p|llm-d>  [options]
 #
 # Usage examples:
 #   bash run_test.sh --mode native

@@ -22,7 +22,7 @@ To use, set in the training YAML config:
   PD disaggregated (llm-d vllm):
     actor_rollout_ref:
       rollout:
-        name: vllm-llmd-pd          # registers PDEngineReplicaFactory at import time
+        name: vllm-llmd-pd          # needs model.external_lib=...register_pd
         disaggregation:
           prefill_replicas: 2       # do NOT set enabled=True (avoids NotImplementedError from verl)
           decode_replicas: 2
@@ -36,7 +36,7 @@ To use, set in the training YAML config:
   P2P KV-cache sharing (llm-d vllm, aggregated - every replica both pulls and serves):
     actor_rollout_ref:
       rollout:
-        name: vllm-llmd-p2p         # registers P2PEngineReplicaFactory at import time
+        name: vllm-llmd-p2p         # needs model.external_lib=...register_p2p
         agent:
           agent_loop_manager_class: llm_d_rl_verl_integration.llmd_epp.agent_loop_manager.LlmdRouterAgentLoopManager
         custom:
@@ -55,23 +55,11 @@ from llm_d_rl_verl_integration.base_agent_loop_manager import LlmdBaseAgentLoopM
 from llm_d_rl_verl_integration.llmd_actor import LlmdActor
 from llm_d_rl_verl_integration.llmd_epp.llm_client import EPPLLMClient
 from verl.workers.rollout.llm_server import LLMServerClient
-from verl.workers.rollout.replica import RolloutReplicaRegistry
-from llm_d_rl_verl_integration.pd_replica import PDEngineReplicaFactory
-from llm_d_rl_verl_integration.p2p_replica import P2PEngineReplicaFactory
 
-
-def _load_llmd_pd():
-    return PDEngineReplicaFactory
-
-
-def _load_llmd_p2p():
-    return P2PEngineReplicaFactory
-
-
-# Register vllm-llmd-pd / vllm-llmd-p2p at import time — this module is imported
-# before FSDP workers call get_rollout_class().
-RolloutReplicaRegistry.register("vllm-llmd-pd", _load_llmd_pd)
-RolloutReplicaRegistry.register("vllm-llmd-p2p", _load_llmd_p2p)
+# No pd_replica / p2p_replica import here: both import vLLM at module scope, which
+# would make this module (and any subclass of it, e.g. the SGLang variant) need
+# vLLM installed. register_pd.py / register_p2p.py own those registrations and
+# import them lazily; both are loaded via model.external_lib for PD/P2P runs.
 
 logger = logging.getLogger(__name__)
 

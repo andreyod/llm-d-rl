@@ -4,10 +4,39 @@ A complete end-to-end example of running verl RL training with the llm-d integra
 
 The manifest has an **8-GPU** worker option active by default; a 4-GPU option is also provided (commented out). Pick the set of run commands below that matches the worker `resources` block you enabled.
 
-**SGLang variant:** [`ray-cluster-sglang.yaml.tmpl`](ray-cluster-sglang.yaml.tmpl) is a parallel manifest that uses SGLang instead of vLLM as the rollout engine, for the EPP-direct-gRPC-routing mode only (no `llmd_serving`/Envoy, no PD, no P2P for SGLang yet). It uses the stock `verlai/verl:sgl0512.dev3` environment image (`IMG_VERL_SGLANG` in [`deploy.env`](deploy.env)) rather than the vLLM-nightly image, and drops the sidecar-fetching init container entirely. Deploy it with `deploy.sh apply-sglang` / `delete-sglang` / `render-sglang`; see [EPP - direct gRPC routing (SGLang)](#epp---direct-grpc-routing-sglang) below for the run command. Verified end-to-end on a real GPU cluster (GRPO/GSM8K, Qwen3-4B, 8 SGLang replicas) - see the manifest's inline comments for two platform quirks this surfaced and fixed:
+**Rollout engine:** one manifest serves both vLLM and SGLang. `deploy.sh` selects an engine
+with `--engine` (default `vllm`) and reads its column from [`deploy.env`](deploy.env):
 
-- The head's `rayStartParams.num-cpus` is `"0"`, not `"4"` like the vLLM template - verl's `TaskRunnerV1` driver has no GPU/node pinning, and SGLang's `sgl_kernel` extension (unlike vLLM's Python import) hard-requires `libcuda.so.1` just to import `SGLangReplica`, which crashes if the driver lands on the GPU-less head.
-- The stock `verlai/verl:sgl*` image doesn't set `PIP_BREAK_SYSTEM_PACKAGES=1` the way the vLLM env image does in its own Dockerfile, so the manifest's `postStart` sets it explicitly before any `pip install` (Ubuntu 24.04 PEP 668 guard).
+```bash
+bash deploy/kuberay/deploy.sh apply                    # vLLM
+bash deploy/kuberay/deploy.sh apply --engine sglang    # SGLang
+```
+
+Only four things differ between the two, all values rather than structure: the environment
+image (`IMG_VERL` / `IMG_VERL_SGLANG`), the head's `rayStartParams.num-cpus`, which Python
+module the `postStart` sanity-check imports, and `PYTORCH_CUDA_ALLOC_CONF`. Adding an engine
+means adding an `ENGINE_<name>_*` block to `deploy.env`, not a manifest.
+
+The two engines are **mutually exclusive in a namespace** - they render to the same
+RayCluster name, so applying one replaces the other. That is deliberate: every script here
+finds pods with `-l ray.io/node-type=head` and `items[0]`, which cannot distinguish two
+clusters, so two live clusters would mean silently benchmarking (or `push-epp.sh`-ing into)
+whichever one answered first.
+
+SGLang covers the EPP-direct-gRPC routing mode only - no `llmd_serving`/Envoy, no PD, no
+P2P. Its cluster still fetches the Envoy and sidecar binaries and still carries the
+vLLM-only env vars; they are inert when unused, and keeping them means switching engines
+never needs a manifest change. Two SGLang platform quirks the shared manifest encodes, both
+verified end-to-end on a real GPU cluster (GRPO/GSM8K, Qwen3-4B, 8 SGLang replicas):
+
+- `num-cpus` is `"0"` for SGLang, `"4"` for vLLM. verl's `TaskRunnerV1` driver has no
+  GPU/node pinning, and SGLang's `sgl_kernel` extension (unlike vLLM's Python import)
+  hard-requires `libcuda.so.1` just to import `SGLangReplica`, which crashes if the driver
+  lands on the GPU-less head.
+- The stock `verlai/verl:sgl*` image doesn't set `PIP_BREAK_SYSTEM_PACKAGES=1` the way the
+  vLLM env image does in its Dockerfile, so `postStart` sets it before any `pip install`
+  (Ubuntu 24.04 PEP 668 guard). It is now set unconditionally - a no-op where the image
+  already sets it.
 
 ## Prerequisites
 
@@ -53,9 +82,8 @@ bash deploy/kuberay/deploy.sh apply
 
 Useful sub-commands: `deploy.sh configmap` ((re)create just the ConfigMap),
 `deploy.sh render` (print the rendered manifest without applying), `deploy.sh delete`
-(tear down the cluster). For the SGLang variant, use `deploy.sh apply-sglang` /
-`render-sglang` / `delete-sglang` instead - same ConfigMap, different cluster manifest
-(`ray-cluster-sglang.yaml.tmpl`).
+(tear down the cluster). Each takes an optional `--engine vllm|sglang`; the ConfigMap is
+the same either way.
 
 Wait for both pods to be ready:
 ```bash
@@ -167,7 +195,7 @@ bash /tmp/verl/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
 
 ### EPP - direct gRPC routing (SGLang)
 
-Requires the SGLang variant cluster (`deploy.sh apply-sglang`). `rollout.name=sglang` is a verl
+Requires a cluster deployed with `--engine sglang`. `rollout.name=sglang` is a verl
 **built-in** backend - no `model.external_lib` registration hook needed, unlike the PD/P2P vLLM
 modes above.
 

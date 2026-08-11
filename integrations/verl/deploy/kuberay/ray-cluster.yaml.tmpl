@@ -7,7 +7,13 @@ spec:
   rayVersion: '2.47.1'
   headGroupSpec:
     rayStartParams:
-      num-cpus: "4"
+      # Per-engine (ENGINE_HEAD_NUM_CPUS in deploy.env). vLLM: "4", so the driver can
+      # land here - the head has the RAM for the dataloader and the validation batch.
+      # SGLang: "0", so Ray never schedules a generic actor here - importing
+      # SGLangReplica needs libcuda.so.1 and crashes on this GPU-less node. EPP is
+      # unaffected either way: LlmdActor pins itself with NodeAffinity, not CPU
+      # scheduling, and asks for num_cpus=0.
+      num-cpus: "${ENGINE_HEAD_NUM_CPUS}"
     template:
       spec:
         # Co-locate the head with the worker so EPP/Envoy routing stays on-node.
@@ -48,7 +54,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-head
-          image: ${IMG_VERL} # verl env image; same image covers native/epp/epp-p2p/PD
+          image: ${IMG_TRAINER} # engine-selected env image (IMG_VERL / IMG_VERL_SGLANG); one image covers native/epp/epp-p2p/PD
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -60,6 +66,11 @@ spec:
                   exec > /tmp/setup_log.txt 2>&1
                   set -euo pipefail
                   echo "Starting setup..."
+
+                  # PEP 668: the vLLM env image sets this in its own Dockerfile, the stock
+                  # verlai/verl:sgl* image does not, and Ubuntu 24.04 blocks system-wide pip
+                  # installs without it. Harmless where it is already set.
+                  export PIP_BREAK_SYSTEM_PACKAGES=1
 
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
@@ -83,6 +94,7 @@ spec:
                   python3 -c "import llm_d_rl_common" || { echo "FATAL: common package not importable after install"; exit 1; }
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
                   python3 -c "import llm_d_rl_verl_integration" || { echo "FATAL: integration package not importable after install"; exit 1; }
+                  python3 -c "import ${ENGINE_PY_MODULE}" || { echo "FATAL: ${ENGINE_PY_MODULE} not importable - wrong image for this engine?"; exit 1; }
 
                   # Prepare data and prefetch the model.
                   mkdir -p /tmp/verl/hf_cache/datasets
@@ -249,7 +261,7 @@ spec:
             name: llm-d-bins
         containers:
         - name: ray-worker
-          image: ${IMG_VERL} # verl env image; same image covers native/epp/epp-p2p/PD
+          image: ${IMG_TRAINER} # engine-selected env image (IMG_VERL / IMG_VERL_SGLANG); one image covers native/epp/epp-p2p/PD
           imagePullPolicy: Always
           lifecycle:
             postStart:
@@ -260,6 +272,11 @@ spec:
                 - |
                   exec > /tmp/setup_log.txt 2>&1
                   set -euo pipefail
+                  # PEP 668: the vLLM env image sets this in its own Dockerfile, the stock
+                  # verlai/verl:sgl* image does not, and Ubuntu 24.04 blocks system-wide pip
+                  # installs without it. Harmless where it is already set.
+                  export PIP_BREAK_SYSTEM_PACKAGES=1
+
                   # Install verl from pinned commit
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
@@ -282,6 +299,7 @@ spec:
                   python3 -c "import llm_d_rl_common" || { echo "FATAL: common package not importable after install"; exit 1; }
                   pip install --no-deps --no-cache-dir --force-reinstall "git+https://github.com/llm-d-incubation/llm-d-rl.git#subdirectory=integrations/verl"
                   python3 -c "import llm_d_rl_verl_integration" || { echo "FATAL: integration package not importable after install"; exit 1; }
+                  python3 -c "import ${ENGINE_PY_MODULE}" || { echo "FATAL: ${ENGINE_PY_MODULE} not importable - wrong image for this engine?"; exit 1; }
                   mkdir -p /tmp/verl/hf_cache/datasets
                   # Full model weights for FSDP training + vLLM rollout
                   python3 -c "
@@ -331,8 +349,10 @@ spec:
           - name: VLLM_USE_V1
             value: "1"
           - name: PYTORCH_CUDA_ALLOC_CONF
-            # CuMemAllocator (used by vLLM sleep/wake) is incompatible with expandable_segments.
-            value: "expandable_segments:False"
+            # vLLM: "expandable_segments:False" - CuMemAllocator (sleep/wake) is
+            # incompatible with expandable_segments. SGLang: empty, which torch parses
+            # as no options. ENGINE_ALLOC_CONF in deploy.env.
+            value: "${ENGINE_ALLOC_CONF}"
           - name: TOKENIZERS_PARALLELISM
             value: "false"
           - name: OMP_NUM_THREADS

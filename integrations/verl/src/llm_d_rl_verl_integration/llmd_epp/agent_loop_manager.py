@@ -71,12 +71,22 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
     established by vLLMReplica.launch_servers(): ``"vllm_server_{rank}_0"``.
     server_addresses[i] from GlobalRequestLoadBalancer corresponds to
     replica_rank i (insertion order is preserved).
+
+    A different rollout engine behind the same EPP routing overrides the four class
+    attributes below and nothing else - see llmd_epp_sglang.
     """
+
+    #: Ray actor-name prefix its replica class registers ("<prefix>_{rank}_0").
+    server_actor_prefix = "vllm_server"
+    #: Written to each endpoints-YAML entry; picks EPP's Prometheus metric mapping.
+    engine_type = "vllm"
+    #: Extra LlmdActor.options() for the EPP actor (SGLang needs num_cpus=0).
+    epp_actor_options: dict = {}
+    #: Client class swapped in for the workers.
+    client_cls = EPPLLMClient
 
     def _on_servers_ready(self, server_addresses: list[str]) -> None:
         rollout_cfg = self.rollout_config
-        custom = OmegaConf.to_container(rollout_cfg.get("custom") or {}, resolve=True)
-        endpoints_file = custom.get("epp_endpoints_file")
 
         # Detect PD mode by backend name (not disaggregation.enabled, which we
         # intentionally leave False to avoid verl's sglang-only guard). P2P mode
@@ -93,24 +103,25 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
         # Model name for EPP / generate body.
         self._model_name = self.model_config.path
 
-        # Build address → actor handle map.
-        # server_addresses[i] is the address for replica_rank i;
-        # vLLMReplica names its node-0 server actor "vllm_server_{i}_0".
+        # Build address -> actor handle map. server_addresses[i] is the address for
+        # replica_rank i, and the replica class names its node-0 server actor
+        # "<server_actor_prefix>_{i}_0".
         self._address_to_handle = {}
         for i, addr in enumerate(server_addresses):
-            actor_name = f"vllm_server_{i}_0"
+            actor_name = f"{self.server_actor_prefix}_{i}_0"
             try:
                 self._address_to_handle[addr] = ray.get_actor(actor_name)
             except ValueError:
                 raise RuntimeError(
                     f"Could not find Ray actor {actor_name!r} for server {addr}. "
-                    "Make sure the rollout backend is vllm and servers are started."
+                    f"Make sure the rollout backend matches {self.engine_type!r} and servers are started."
                 )
-        logger.info("[LlmdRouterAgentLoopManager] address→handle map: %s", list(self._address_to_handle.keys()))
+        logger.info("[%s] address -> handle map: %s",
+                    type(self).__name__, list(self._address_to_handle.keys()))
 
         # Launch EPP via a Ray actor pinned to the head node.
         epp_actor = LlmdActor.options(
-            scheduling_strategy=self.head_node_strategy()
+            scheduling_strategy=self.head_node_strategy(), **self.epp_actor_options
         ).remote()
 
         self._grpc_addr = ray.get(
@@ -119,14 +130,15 @@ class LlmdRouterAgentLoopManager(LlmdBaseAgentLoopManager):
                 server_addresses=server_addresses,
                 model_config=OmegaConf.to_container(self.model_config, resolve=True),
                 server_roles=server_roles,
+                engine_type=self.engine_type,
             )
         )
         self._epp_actor = epp_actor
-        logger.info("[LlmdRouterAgentLoopManager] EPP ready at %s", self._grpc_addr)
+        logger.info("[%s] EPP ready at %s", type(self).__name__, self._grpc_addr)
 
     def _create_llm_client(self) -> LLMServerClient:
         custom = OmegaConf.to_container(self.rollout_config.get("custom") or {}, resolve=True)
-        return EPPLLMClient(
+        return self.client_cls(
             config=self.config,
             load_balancer_handle=self.llm_client._load_balancer,
             grpc_addr=self._grpc_addr,

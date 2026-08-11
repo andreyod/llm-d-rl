@@ -140,6 +140,28 @@ full commands for each mode.
 | `rollout.custom.epp_pool_name` | no | `file-discovery` | EPP pool name |
 | `rollout.custom.epp_pool_namespace` | no | `default` | EPP pool namespace |
 
+### EPP as the endpoint picker, SGLang backend
+
+Same mode, SGLang replicas instead of vLLM. `rollout.name=sglang` is a verl **built-in**
+backend - no `model.external_lib` registration hook needed (unlike `vllm-llmd-pd` /
+`vllm-llmd-p2p` above, which this repo registers itself). No PD/P2P support for SGLang yet.
+
+```bash
+actor_rollout_ref.rollout.name=sglang \
++actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_epp_sglang.agent_loop_manager.SglangEPPRouterAgentLoopManager \
++actor_rollout_ref.rollout.custom.epp_config_file=/path/to/epp-config.yaml \
++actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml
+```
+
+| Key | Required | Default | Description |
+|-----|----------|---------|-------------|
+| `rollout.name` | yes | - | `sglang` |
+| `rollout.agent.agent_loop_manager_class` | yes | - | `llm_d_rl_verl_integration.llmd_epp_sglang.agent_loop_manager.SglangEPPRouterAgentLoopManager` |
+| `rollout.custom.epp_config_file` | yes | - | Path to the EPP YAML config. Start from `deploy/epp-config.yaml`. |
+| `rollout.custom.epp_endpoints_file` | yes | - | Path where the endpoints YAML is written; each entry is labeled `llm-d.ai/engine-type: sglang` so EPP's metrics extractor uses the SGLang Prometheus metric mapping |
+| `rollout.custom.epp_grpc_port` | no | `9002` | EPP gRPC ext_proc port |
+| `rollout.custom.epp_grpc_health_port` | no | `9003` | EPP gRPC health check port |
+
 ### llm-d serving (Envoy + EPP)
 
 ```bash

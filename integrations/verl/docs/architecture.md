@@ -40,6 +40,7 @@ Everything else in the package is **optional** and only loads if you use it.
 |--------|------|------------|
 | `base_agent_loop_manager.py`, `endpoints.py`, `llmd_actor.py` | core plumbing | every run |
 | `llmd_epp/` | "EPP as the endpoint picker" mode | the basic integration |
+| `llmd_epp_sglang/` | "EPP as the endpoint picker" mode, SGLang backend | the SGLang variant of the basic integration |
 | `pd_replica.py` | PD prefill/decode split factory (imported at load) | PD runs (inert otherwise) |
 | `llmd_serving/` | "llm-d serving" mode (Envoy + EPP HTTP stack) | serving mode only |
 | `register_pd.py` | registers the `vllm-llmd-pd` rollout backend | PD runs only |
@@ -82,6 +83,17 @@ Startup, after all vLLM replicas are up:
    and returns the gRPC address.
 3. `LlmdRouterAgentLoopManager` builds `EPPLLMClient` with that address and replaces
    `self.llm_client` - workers receive it before any generation begins.
+
+### SGLang variant (`llmd_epp_sglang/`)
+
+Same mode, SGLang replicas instead of vLLM (`rollout.name=sglang`, a verl **built-in** backend -
+no registration hook needed). `SglangEPPRouterAgentLoopManager` and `SglangEPPLLMClient` mirror
+`LlmdRouterAgentLoopManager`/`EPPLLMClient` exactly, with two differences: actor handles are
+looked up by SGLang's naming convention (`sglang_server_{rank}_0`, vs vLLM's
+`vllm_server_{rank}_0`), and each endpoints-YAML entry is written with an
+`llm-d.ai/engine-type: sglang` label so EPP's `core-metrics-extractor` uses the SGLang
+Prometheus metric-name mapping instead of the vLLM default. No PD or P2P support for this
+backend yet.
 
 ## Mode 2: llm-d serving (`llmd_serving/`)
 
@@ -133,7 +145,9 @@ Hydra overrides are in the [general deployment guide](../deploy/README.md#pd-dis
 
 ## Endpoints YAML
 
-The endpoints YAML holds the list of available vLLM replica addresses. `LlmdActor` writes it at
-startup to the path set by the `epp_endpoints_file` override, and the EPP config's `file-discovery`
-plugin has a `path:` that tells EPP where to read it. **Those two paths must match** (default:
-`/tmp/epp-endpoints.yaml`).
+The endpoints YAML holds the list of available replica addresses (vLLM or SGLang). `LlmdActor`
+writes it at startup to the path set by the `epp_endpoints_file` override, and the EPP config's
+`file-discovery` plugin has a `path:` that tells EPP where to read it. **Those two paths must
+match** (default: `/tmp/epp-endpoints.yaml`). Each entry carries an `llm-d.ai/engine-type` label
+(`vllm` by default, `sglang` for the SGLang variant) that EPP's `core-metrics-extractor` uses to
+select the right Prometheus metric-name mapping for that replica's backend.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|epp-p2p|wave-admission|llm-d>  [options]
+# run_test.sh  --mode <native|epp|epp-inflight|epp-fc|epp-p2p|epp-sglang|wave-admission|llm-d>  [options]
 #
 # Usage examples:
 #   bash run_test.sh --mode native
@@ -7,11 +7,12 @@
 #   bash run_test.sh --mode epp --steps 20 --tp 2 --n 4
 #   bash run_test.sh --mode epp-fc --task weka   # EPP routing + per-endpoint concurrency CAP (flow-control queue)
 #   bash run_test.sh --mode epp-p2p              # EPP routing + P2P KV-cache sharing (every replica pulls/serves)
+#   bash run_test.sh --mode epp-sglang           # EPP direct-gRPC routing, SGLang replicas instead of vLLM
 #   bash run_test.sh --mode wave-admission --task weka   # estimation-gated admission, no EPP (see wave_admission/)
 #   bash run_test.sh --mode llm-d          # (not yet implemented)
 #
 # Options:
-#   --mode   native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d (required)
+#   --mode   native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d (required)
 #   --steps  total_training_steps          (default: 40)
 #   --tp     tensor-parallel size          (default: 1)
 #   --n      rollout group size            (default: 8)
@@ -46,7 +47,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d)"
+  echo "ERROR: --mode is required  (native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d)"
   exit 1
 fi
 
@@ -172,13 +173,25 @@ case "$MODE" in
       +actor_rollout_ref.rollout.engine_kwargs.vllm.kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use=${P2P_CPU_BYTES_TO_USE:-4294967296}"
     ;;
 
+  epp-sglang)
+    # EPP direct-gRPC routing with SGLang replicas instead of vLLM. rollout.name=sglang
+    # is a verl BUILT-IN backend (no register_pd.py-style import hook needed, unlike
+    # epp-p2p's vllm-llmd-p2p above). No PD/P2P for SGLang in this mode - see
+    # llmd_epp_sglang/agent_loop_manager.py.
+    DEFAULT_NAME="qwen3_4b_grpo_eppsglang_tp${TP}_n${N}_${STEPS}s"
+    [[ -z "$REQLOG" ]] && REQLOG="on"
+    AGENT_LOOP_MANAGER_CLASS="llm_d_rl_verl_integration.llmd_epp_sglang.agent_loop_manager.SglangEPPRouterAgentLoopManager"
+    EPP_CONFIG_FILE="epp-config.yaml"
+    ROLLOUT_NAME="sglang"
+    ;;
+
   llm-d)
     echo "ERROR: --mode llm-d is not yet implemented"
     exit 1
     ;;
 
   *)
-    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | epp-p2p | wave-admission | llm-d"
+    echo "ERROR: unknown mode '${MODE}'. Choose: native | epp | epp-inflight | epp-fc | epp-p2p | epp-sglang | wave-admission | llm-d"
     exit 1
     ;;
 esac
@@ -205,6 +218,22 @@ EXTRA_HYDRA="
 if [[ -n "$EPP_CONFIG_FILE" ]]; then
   EXTRA_HYDRA="${EXTRA_HYDRA} \
   +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/${EPP_CONFIG_FILE}"
+  # LlmdActor (started by whichever Ray actor calls _on_servers_ready - verl's
+  # own unpinned TaskRunnerV1 driver, so this can be a GPU worker, not just the
+  # head) reads VERL_EPP_BINARY/VERL_ENVOY_BINARY/VERL_SIDECAR_BINARY from
+  # os.environ at import time. Ray's job-level runtime_env only guarantees
+  # env_vars explicitly listed here reach actors wherever they run - it does
+  # NOT fall back to the pod's own container env for actors spawned under a
+  # job that already set an explicit runtime_env. Forward whichever of these
+  # are actually set on this pod (empty/unset ones are omitted rather than
+  # forwarded as blank, so llmd_actor.py's own os.environ.get(...) defaults
+  # still apply when a binary genuinely isn't provided).
+  for v in VERL_EPP_BINARY VERL_ENVOY_BINARY VERL_SIDECAR_BINARY; do
+    if [[ -n "${!v:-}" ]]; then
+      EXTRA_HYDRA="${EXTRA_HYDRA} \
+  +ray_kwargs.ray_init.runtime_env.env_vars.${v}=${!v}"
+    fi
+  done
 fi
 if [[ -n "$EPP_REPORT_COMPLETION" ]]; then
   EXTRA_HYDRA="${EXTRA_HYDRA} \

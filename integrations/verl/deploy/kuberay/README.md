@@ -4,6 +4,11 @@ A complete end-to-end example of running verl RL training with the llm-d integra
 
 The manifest has an **8-GPU** worker option active by default; a 4-GPU option is also provided (commented out). Pick the set of run commands below that matches the worker `resources` block you enabled.
 
+**SGLang variant:** [`ray-cluster-sglang.yaml.tmpl`](ray-cluster-sglang.yaml.tmpl) is a parallel manifest that uses SGLang instead of vLLM as the rollout engine, for the EPP-direct-gRPC-routing mode only (no `llmd_serving`/Envoy, no PD, no P2P for SGLang yet). It uses the stock `verlai/verl:sgl0512.dev3` environment image (`IMG_VERL_SGLANG` in [`deploy.env`](deploy.env)) rather than the vLLM-nightly image, and drops the sidecar-fetching init container entirely. Deploy it with `deploy.sh apply-sglang` / `delete-sglang` / `render-sglang`; see [EPP - direct gRPC routing (SGLang)](#epp---direct-grpc-routing-sglang) below for the run command. Verified end-to-end on a real GPU cluster (GRPO/GSM8K, Qwen3-4B, 8 SGLang replicas) - see the manifest's inline comments for two platform quirks this surfaced and fixed:
+
+- The head's `rayStartParams.num-cpus` is `"0"`, not `"4"` like the vLLM template - verl's `TaskRunnerV1` driver has no GPU/node pinning, and SGLang's `sgl_kernel` extension (unlike vLLM's Python import) hard-requires `libcuda.so.1` just to import `SGLangReplica`, which crashes if the driver lands on the GPU-less head.
+- The stock `verlai/verl:sgl*` image doesn't set `PIP_BREAK_SYSTEM_PACKAGES=1` the way the vLLM env image does in its own Dockerfile, so the manifest's `postStart` sets it explicitly before any `pip install` (Ubuntu 24.04 PEP 668 guard).
+
 ## Prerequisites
 
 - Kubernetes cluster with GPU nodes
@@ -48,7 +53,9 @@ bash deploy/kuberay/deploy.sh apply
 
 Useful sub-commands: `deploy.sh configmap` ((re)create just the ConfigMap),
 `deploy.sh render` (print the rendered manifest without applying), `deploy.sh delete`
-(tear down the cluster).
+(tear down the cluster). For the SGLang variant, use `deploy.sh apply-sglang` /
+`render-sglang` / `delete-sglang` instead - same ConfigMap, different cluster manifest
+(`ray-cluster-sglang.yaml.tmpl`).
 
 Wait for both pods to be ready:
 ```bash
@@ -155,6 +162,32 @@ bash /tmp/verl/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
     +actor_rollout_ref.rollout.custom.sidecar_connector=nixlv2 \
     actor_rollout_ref.rollout.disable_log_stats=False \
     '+actor_rollout_ref.rollout.engine_kwargs.vllm.enable_prompt_tokens_details=true' \
+    'hydra.run.dir=/tmp/hydra-outputs'
+```
+
+### EPP - direct gRPC routing (SGLang)
+
+Requires the SGLang variant cluster (`deploy.sh apply-sglang`). `rollout.name=sglang` is a verl
+**built-in** backend - no `model.external_lib` registration hook needed, unlike the PD/P2P vLLM
+modes above.
+
+```bash
+MODEL_PATH=/tmp/verl/models/Qwen3-4B \
+TRAIN_FILE=/tmp/verl/data/gsm8k/train.parquet \
+TEST_FILE=/tmp/verl/data/gsm8k/test.parquet \
+SAVE_FREQ=-1 \
+PROJECT_NAME=verl_grpo_gsm8k_examples \
+EXPERIMENT_NAME=qwen3_4b_grpo_sglang_epp_fsdp_8gpu \
+bash /tmp/verl/verl/examples/grpo_trainer/run_qwen3_4b_fsdp.sh \
+    actor_rollout_ref.rollout.name=sglang \
+    trainer.logger='["console","file"]' \
+    trainer.default_local_dir=/tmp/checkpoints \
+    trainer.total_training_steps=50 \
+    '+ray_kwargs.ray_init.runtime_env.env_vars.VERL_FILE_LOGGER_ROOT=/tmp/verl/logs' \
+    +actor_rollout_ref.rollout.agent.agent_loop_manager_class=llm_d_rl_verl_integration.llmd_epp_sglang.agent_loop_manager.SglangEPPRouterAgentLoopManager \
+    +actor_rollout_ref.rollout.custom.epp_config_file=/etc/llmd-configs/epp-config.yaml \
+    +actor_rollout_ref.rollout.custom.epp_endpoints_file=/tmp/epp-endpoints.yaml \
+    actor_rollout_ref.rollout.disable_log_stats=False \
     'hydra.run.dir=/tmp/hydra-outputs'
 ```
 

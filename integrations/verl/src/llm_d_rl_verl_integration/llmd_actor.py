@@ -63,6 +63,7 @@ class LlmdActor:
         rollout_config: dict,
         server_roles: Optional[list[str]] = None,
         with_envoy: bool = False,
+        engine_type: str = "vllm",
     ) -> str:
         """Write endpoints, start EPP (and Envoy if with_envoy). Returns address for workers."""
         custom = rollout_config.get("custom") or {}
@@ -74,7 +75,7 @@ class LlmdActor:
             if pd_mode and server_roles and any(r is not None for r in server_roles):
                 write_pd_endpoints(endpoints_file, server_addresses, server_roles, model_config)
             else:
-                write_rollout_endpoints(endpoints_file, server_addresses, model_config)
+                write_rollout_endpoints(endpoints_file, server_addresses, model_config, engine_type=engine_type)
             logger.info("[LlmdActor] wrote endpoints to %s", endpoints_file)
 
         epp_grpc_port, epp_health_port = await self._start_epp(rollout_config, custom)

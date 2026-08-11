@@ -11,6 +11,7 @@ No changes to verl core required — wire in via YAML:
 from __future__ import annotations
 
 import logging
+import socket
 from typing import Any
 
 import ray
@@ -84,12 +85,23 @@ class LlmdBaseAgentLoopManager(AgentLoopManagerTQ):
     def head_node_strategy() -> NodeAffinitySchedulingStrategy:
         """Return a scheduling strategy that pins a Ray actor to the head node."""
         gcs_address = ray.get_runtime_context().gcs_address
-        head_ip = gcs_address.split(":")[0]
+        head_host = gcs_address.split(":")[0]
+        # KubeRay sets RAY_ADDRESS to the head Service DNS name (not an IP), which
+        # ray.get_runtime_context().gcs_address then reflects verbatim. Resolving
+        # only matters when this call runs on a node other than the head itself
+        # (e.g. verl's TaskRunnerV1 driver, unpinned, landing on a GPU worker) -
+        # from the head, gcs_address is already the head's own IP. Resolve via DNS
+        # first so both cases match a NodeManagerAddress; fall back to the literal
+        # string if it's already an IP (gethostbyname is a no-op on IP literals).
+        try:
+            head_ip = socket.gethostbyname(head_host)
+        except socket.gaierror:
+            head_ip = head_host
         for node in ray.nodes():
             if node["Alive"] and node["NodeManagerAddress"] == head_ip:
                 return NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False)
         raise RuntimeError(
-            f"Could not find a live Ray node with GCS IP {head_ip}. "
+            f"Could not find a live Ray node with GCS IP {head_ip} (resolved from {head_host!r}). "
             f"Nodes: {[n['NodeManagerAddress'] for n in ray.nodes()]}"
         )
 

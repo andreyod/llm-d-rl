@@ -1,0 +1,146 @@
+"""LLMServerClient that routes via EPP gRPC, then delegates inference to the
+chosen SGLang actor handle exactly as original verl does.
+
+EPP picks endpoint -> call actor.generate.remote() -> SGLang handles it.
+No PD/P2P sidecar dispatch in this mode.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+import ray
+
+from verl.workers.rollout.llm_server import LLMServerClient
+from verl.workers.rollout.replica import TokenOutput
+
+from llm_d_rl_common.reqlog import log_request, open_reqlog, phash
+
+logger = logging.getLogger(__name__)
+
+
+class SglangEPPLLMClient(LLMServerClient):
+    """Routes each request through EPP gRPC to pick a server, then calls
+    that server's Ray actor directly — same as original verl flow.
+
+    Args:
+        config: verl DictConfig.
+        load_balancer_handle: original GlobalRequestLoadBalancer (kept for
+            compatibility but not used for routing decisions).
+        grpc_addr: EPP gRPC address (``host:port``).
+        address_to_handle: ``{server_address: ray_actor_handle}`` map built
+            at startup. server_address must match what EPP returns as the
+            ``x-gateway-destination-endpoint`` header.
+        model_name: model identifier sent in the EPP request body.
+        report_completion: passed to ``EPPGrpcClient.route()`` as
+            ``track_completion``. If True, EPP's in-flight counter reflects the
+            real generation window instead of the pick-time snapshot. Needed for
+            an active-request-scorer or a per-endpoint
+            concurrency cap (flow control) to bind on anything meaningful;
+            adds one held-open stream per in-flight request plus two extra
+            ext_proc messages per request, so leave it off unless the EPP config
+            actually consumes the in-flight signal.
+    """
+
+    def __init__(
+        self,
+        config,
+        load_balancer_handle=None,
+        *,
+        grpc_addr: str,
+        address_to_handle: dict[str, ray.actor.ActorHandle],
+        model_name: str,
+        report_completion: bool = False,
+        **kwargs,
+    ):
+        super().__init__(config=config, load_balancer_handle=load_balancer_handle, **kwargs)
+        self._grpc_addr = grpc_addr
+        self._address_to_handle = address_to_handle
+        self._model_name = model_name
+        self._report_completion = report_completion
+        self._epp_client = None  # created on workers after unpickling via __setstate__
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        from llm_d_rl_common.epp_grpc_client import EPPGrpcClient
+        self._epp_client = EPPGrpcClient(self._grpc_addr)
+        self._reqlog_f = open_reqlog()
+        # Per-trajectory turn counter keyed by the (stable) incoming request_id;
+        # see NativeLogging twin. 0-based turn index per trajectory (0 for single-turn).
+        self._turn_counts: dict[str, int] = {}
+
+    async def generate(
+        self,
+        request_id,
+        *,
+        prompt_ids: list[int],
+        sampling_params: dict[str, Any],
+        image_data=None,
+        video_data=None,
+        **kwargs,
+    ) -> TokenOutput:
+        t0 = time.monotonic()
+
+        result = await self._epp_client.route(
+            self._model_name, prompt_ids, str(request_id),
+            track_completion=self._report_completion,
+        )
+        endpoint, _sidecar_headers = result.endpoint, result.sidecar_headers
+        t_pick = time.monotonic()
+
+        if endpoint is None:
+            await result.complete(0)
+            raise RuntimeError(f"EPP returned no endpoint for request {request_id}")
+
+        actor = self._address_to_handle.get(endpoint)
+        if actor is None:
+            await result.complete(0)
+            raise RuntimeError(
+                f"EPP returned endpoint {endpoint!r} which is not in the known server map. "
+                f"Known: {list(self._address_to_handle.keys())}"
+            )
+
+        # SGLangHttpServer.generate() (verl/workers/rollout/sglang_rollout/async_sglang_server.py)
+        # accepts only prompt_ids/sampling_params/request_id/image_data/video_data plus its own
+        # PD bootstrap_* kwargs - unlike vLLM's server, it has no **kwargs catch-all. verl's
+        # AgentLoopWorkerTQ calls every LLMServerClient.generate() with a fixed multimodal kwarg
+        # set (e.g. audio_data, mm_processor_kwargs) regardless of backend, so silently drop
+        # whatever SGLang's actor doesn't declare rather than erroring on every request.
+        kwargs.pop("audio_data", None)
+        kwargs.pop("mm_processor_kwargs", None)
+        kwargs.pop("priority", None)
+
+        out = None
+        try:
+            out = await actor.generate.remote(
+                prompt_ids=prompt_ids,
+                sampling_params=sampling_params,
+                request_id=request_id,
+                image_data=image_data,
+                video_data=video_data,
+                **kwargs,
+            )
+            return out
+        finally:
+            t_end = time.monotonic()
+            try:
+                ntok = len(out.token_ids) if out is not None and getattr(out, "token_ids", None) is not None else 0
+            except Exception:  # noqa: BLE001
+                ntok = 0
+            await result.complete(ntok)
+            rid = str(request_id)
+            turn = self._turn_counts.get(rid, 0)
+            self._turn_counts[rid] = turn + 1
+            log_request(self._reqlog_f, {
+                "ts": time.time(),
+                "request_id": rid,
+                "turn": turn,
+                "endpoint": endpoint,
+                "prompt_hash": phash(prompt_ids),
+                "prompt_tokens": len(prompt_ids),
+                "output_tokens": ntok,
+                "pick_s": round(t_pick - t0, 5),
+                "gen_s": round(t_end - t_pick, 5),
+            })

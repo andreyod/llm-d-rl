@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
 from typing import Any
@@ -21,7 +20,9 @@ def model_label(model_config: Any) -> str:
 
 
 def split_address(server_address: str) -> tuple[str, str]:
-    """Split ``host:port`` or ``[ipv6]:port`` into (host, port)."""
+    """Split ``host:port``, ``[ipv6]:port``, or ``scheme://host:port`` into (host, port)."""
+    if "://" in server_address:
+        server_address = server_address.split("://", 1)[1]
     if server_address.startswith("["):
         bracket_end = server_address.index("]")
         host = server_address[1:bracket_end]
@@ -37,27 +38,17 @@ def split_address(server_address: str) -> tuple[str, str]:
 
 def _atomic_write(path: str, entries: list[dict[str, Any]]) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    lock_path = path + ".lock"
-    with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            existing: dict[str, dict] = {}
-            if os.path.exists(path):
-                with open(path) as f:
-                    data = yaml.safe_load(f) or {}
-                existing = {e["name"]: e for e in data.get("endpoints", [])}
-            for entry in entries:
-                existing[entry["name"]] = entry
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                yaml.dump({"endpoints": list(existing.values())}, f, sort_keys=False)
-            os.replace(tmp, path)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.dump({"endpoints": entries}, f, sort_keys=False)
+    os.replace(tmp, path)
 
 
 def write_rollout_endpoints(
-    path: str, server_addresses: list[str], model_config: Any, engine_type: str = "vllm"
+    path: str,
+    server_addresses: list[str],
+    model_config: Any = None,
+    engine_type: str = "vllm",
 ) -> None:
     """Write standard (non-PD) endpoints YAML.
 
@@ -65,21 +56,27 @@ def write_rollout_endpoints(
     The ``llm-d.ai/engine-type`` label tells EPP's metrics extractor which
     Prometheus metric-name mapping to use (vllm/sglang/trtllm-serve/...);
     defaults to "vllm" to preserve existing behaviour for callers that don't
-    pass it.
+    pass it. ``model_config`` is optional; if omitted the ``model`` label is
+    not written.
     """
     if not path or not server_addresses:
         return
-    label = model_label(model_config)
+    label = model_label(model_config) if model_config is not None else None
     entries = []
     for i, addr in enumerate(server_addresses):
         host, port = split_address(addr)
+        labels: dict[str, str] = {}
+        if label is not None:
+            labels["model"] = label
+        labels["llm-d.ai/engine-type"] = engine_type
         entries.append({
             "name": f"{engine_type}-replica-{i}",
             "address": host,
             "port": port,
             "rankIndex": i,
-            "labels": {"model": label, "llm-d.ai/engine-type": engine_type},
+            "labels": labels,
         })
+
     _atomic_write(path, entries)
     logger.info("Wrote %d endpoints to %s", len(entries), path)
 

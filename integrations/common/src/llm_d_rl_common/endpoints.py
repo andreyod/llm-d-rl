@@ -56,10 +56,16 @@ def _atomic_write(path: str, entries: list[dict[str, Any]]) -> None:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def write_rollout_endpoints(path: str, server_addresses: list[str], model_config: Any) -> None:
+def write_rollout_endpoints(
+    path: str, server_addresses: list[str], model_config: Any, engine_type: str = "vllm"
+) -> None:
     """Write standard (non-PD) endpoints YAML.
 
-    Each replica gets ``name: vllm-replica-{i}`` and ``rankIndex: i``.
+    Each replica gets ``name: {engine_type}-replica-{i}`` and ``rankIndex: i``.
+    The ``llm-d.ai/engine-type`` label tells EPP's metrics extractor which
+    Prometheus metric-name mapping to use (vllm/sglang/trtllm-serve/...);
+    defaults to "vllm" to preserve existing behaviour for callers that don't
+    pass it.
     """
     if not path or not server_addresses:
         return
@@ -68,11 +74,11 @@ def write_rollout_endpoints(path: str, server_addresses: list[str], model_config
     for i, addr in enumerate(server_addresses):
         host, port = split_address(addr)
         entries.append({
-            "name": f"vllm-replica-{i}",
+            "name": f"{engine_type}-replica-{i}",
             "address": host,
             "port": port,
             "rankIndex": i,
-            "labels": {"model": label},
+            "labels": {"model": label, "llm-d.ai/engine-type": engine_type},
         })
     _atomic_write(path, entries)
     logger.info("Wrote %d endpoints to %s", len(entries), path)

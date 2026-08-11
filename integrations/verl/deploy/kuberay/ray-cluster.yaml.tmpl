@@ -100,7 +100,10 @@ spec:
                   mkdir -p /tmp/verl/hf_cache/datasets
 
                   # Pre-fetch model weights (tokenizer/config only on head)
-                  python3 -c "
+                  # flock: head and worker prefetch into the SAME PVC directory now, so
+                  # serialise them - huggingface_hub renames atomically but would
+                  # otherwise download the shared small files twice on a cold PVC.
+                  flock /tmp/verl/models/.hf-prefetch.lock python3 -c "
                   from huggingface_hub import snapshot_download
                   snapshot_download('Qwen/Qwen3-4B', local_dir='/tmp/verl/models/Qwen3-4B',
                       ignore_patterns=['*.safetensors', '*.bin', '*.pt'],
@@ -200,6 +203,20 @@ spec:
           - mountPath: /etc/llmd-configs
             name: llmd-epp-configs
             readOnly: true
+          # Durable cache (PVC): HF checkpoints and built parquet datasets survive a pod
+          # recreate. Mounted AT the paths everything already uses, via subPath, so the
+          # 91 references to /tmp/verl/{models,data,hf_cache} across the workloads need
+          # no change - "fetch if missing, then reuse" is just snapshot_download's and
+          # make_*.py's existing behaviour, now landing on durable storage.
+          - mountPath: /tmp/verl/models
+            name: verl-cache
+            subPath: models
+          - mountPath: /tmp/verl/data
+            name: verl-cache
+            subPath: data
+          - mountPath: /tmp/verl/hf_cache
+            name: verl-cache
+            subPath: hf_cache
         volumes:
         - name: dshm
           emptyDir:
@@ -208,6 +225,9 @@ spec:
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs
+        - name: verl-cache
+          persistentVolumeClaim:
+            claimName: verl-cache
         # Shared scratch for the EPP/Envoy binaries; starts empty on a fresh pod.
         - name: llm-d-bins
           emptyDir: {}
@@ -302,7 +322,10 @@ spec:
                   python3 -c "import ${ENGINE_PY_MODULE}" || { echo "FATAL: ${ENGINE_PY_MODULE} not importable - wrong image for this engine?"; exit 1; }
                   mkdir -p /tmp/verl/hf_cache/datasets
                   # Full model weights for FSDP training + vLLM rollout
-                  python3 -c "
+                  # flock: head and worker prefetch into the SAME PVC directory now, so
+                  # serialise them - huggingface_hub renames atomically but would
+                  # otherwise download the shared small files twice on a cold PVC.
+                  flock /tmp/verl/models/.hf-prefetch.lock python3 -c "
                   from huggingface_hub import snapshot_download
                   snapshot_download('Qwen/Qwen3-4B', local_dir='/tmp/verl/models/Qwen3-4B',
                       local_dir_use_symlinks=False)
@@ -380,10 +403,12 @@ spec:
             limits:
             # --- Option A: 8 GPUs ---
               cpu: "64"
-              # 512G (was 256G): 8-rank FSDP actor + vLLM replicas + ref hold the model in
-              # host RAM per rank; measured worker peaks sit at ~250-256G regardless of batch
-              # or image size, leaving no headroom under the old 256G limit.
-              memory: "512G"
+              # 1200G: the 8-rank FSDP actor + vLLM replicas + ref peak at ~250-256G of
+              # host RAM, AND the dshm tmpfs below is charged to this same cgroup - at
+              # cpu_bytes_to_use=72GiB x 8 replicas that is another 576GiB. A ceiling,
+              # not a reservation: requests stay at 256G. Node allocatable is ~2014GiB
+              # and every other pod on a GPU node here is a DaemonSet (~112GiB).
+              memory: "1200G"
               nvidia.com/gpu: "8"
             requests:
               cpu: "48"
@@ -405,6 +430,20 @@ spec:
           - mountPath: /etc/llmd-configs
             name: llmd-epp-configs
             readOnly: true
+          # Durable cache (PVC): HF checkpoints and built parquet datasets survive a pod
+          # recreate. Mounted AT the paths everything already uses, via subPath, so the
+          # 91 references to /tmp/verl/{models,data,hf_cache} across the workloads need
+          # no change - "fetch if missing, then reuse" is just snapshot_download's and
+          # make_*.py's existing behaviour, now landing on durable storage.
+          - mountPath: /tmp/verl/models
+            name: verl-cache
+            subPath: models
+          - mountPath: /tmp/verl/data
+            name: verl-cache
+            subPath: data
+          - mountPath: /tmp/verl/hf_cache
+            name: verl-cache
+            subPath: hf_cache
         volumes:
         # Shared scratch: fetch-sidecar (init) extracts the sidecar binary here and
         # decode replicas read it at /opt/llm-d-bins (VERL_SIDECAR_BINARY). Starts
@@ -416,7 +455,15 @@ spec:
             medium: Memory
             # /dev/shm holds OffloadingConnector's CPU KV tier, so this caps
             # cpu_bytes_to_use x n_replicas. Counts against the pod memory limit.
-            sizeLimit: "256Gi"
+            # 640Gi headroom for 8 x 72GiB (PR #2067's "size the CPU tier at least as
+            # large as the per-replica GPU KV cache", measured at 67.43GiB). A cap only,
+            # so smaller cpu_bytes_to_use values need no manifest change - sweep them
+            # with P2P_CPU_BYTES_TO_USE instead. NOTE: a leaked vllm_offload_*.mmap now
+            # pins up to 72GiB, so clearing them between runs is mandatory, not hygiene.
+            sizeLimit: "640Gi"
         - name: llmd-epp-configs
           configMap:
             name: llmd-epp-configs
+        - name: verl-cache
+          persistentVolumeClaim:
+            claimName: verl-cache

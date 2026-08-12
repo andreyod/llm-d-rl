@@ -78,17 +78,6 @@ spec:
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout '${VERL_COMMIT}'
                   echo "verl at $(git rev-parse HEAD) (requested '${VERL_COMMIT}')"
-                  # verl imports the old FusedMoE name; patch in a fallback. verl is
-                  # cloned fresh every pod start, so this cannot live in an image.
-                  python3 - <<'PYEOF'
-                  path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
-                  content = open(path).read()
-                  old = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
-                  new = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\nexcept ImportError:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE\ntry:\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
-                  found = old in content
-                  open(path, "w").write(content.replace(old, new)) if found else None
-                  print("patched vllm_fp8_utils.py (FusedMoE fallback)" if found else "WARNING: FusedMoE patch pattern not found in vllm_fp8_utils.py - check manually")
-                  PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
                   # Common package first (the verl package depends on it). The import
@@ -306,17 +295,6 @@ spec:
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
                   cd /tmp/verl/verl && git checkout '${VERL_COMMIT}'
                   echo "verl at $(git rev-parse HEAD) (requested '${VERL_COMMIT}')"
-                  # verl imports the old FusedMoE name; patch in a fallback. verl is
-                  # cloned fresh every pod start, so this cannot live in an image.
-                  python3 - <<'PYEOF'
-                  path = "/tmp/verl/verl/verl/utils/vllm/vllm_fp8_utils.py"
-                  content = open(path).read()
-                  old = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
-                  new = 'try:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoE\nexcept ImportError:\n    from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE\ntry:\n    from vllm.model_executor.layers.linear import LinearBase\nexcept ImportError as e:\n    raise ImportError("FP8 quantization not available") from e'
-                  found = old in content
-                  open(path, "w").write(content.replace(old, new)) if found else None
-                  print("patched vllm_fp8_utils.py (FusedMoE fallback)" if found else "WARNING: FusedMoE patch pattern not found in vllm_fp8_utils.py - check manually")
-                  PYEOF
                   pip install --no-deps -e /tmp/verl/verl
 
                   # Common package first (the verl package depends on it). The import

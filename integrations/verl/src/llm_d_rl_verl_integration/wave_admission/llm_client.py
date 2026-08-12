@@ -144,10 +144,14 @@ class WaveAdmissionLLMClient(LLMServerClient):
                 # Non-null iff the ledger migrated this turn.
                 "kv_source": kv_source,
                 # vLLM's echo of kv_transfer_params (p2p_nosidecar mode only).
+                # verl's generate() names this key "kv_transfer_params"; the
+                # reqlog field keeps its old name so analyze_arm.py still reads it.
                 "kv_transfer_params_response": (
                     getattr(out, "extra_fields", None) or {}
-                ).get("kv_transfer_params_response") if out is not None else None,
-                # Connector-agnostic prefix-hit ground truth.
+                ).get("kv_transfer_params") if out is not None else None,
+                # Connector-agnostic prefix-hit ground truth. Sidecar mode only -
+                # verl's generate() does not report it, so this is null on the
+                # nosidecar path and pull rate must be read from a sidecar arm.
                 "cached_tokens": (
                     getattr(out, "extra_fields", None) or {}
                 ).get("cached_tokens") if out is not None else None,

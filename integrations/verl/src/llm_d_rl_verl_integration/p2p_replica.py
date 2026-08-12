@@ -6,8 +6,9 @@
 # (p2p_addressing.p2p_listener_host) with a flat port, so both dispatch paths
 # address peers by host.
 #
-# VERL_P2P_NOSIDECAR skips the sidecar and POSTs kv_transfer_params straight to
-# vLLM's native /inference/v1/generate.
+# VERL_P2P_NOSIDECAR skips the sidecar and calls verl's own generate(), which
+# takes kv_transfer_params directly. NOTE: that path does not report
+# cached_tokens, so per-request pull evidence is available only in sidecar mode.
 #
 # Requires kv_connector_extra_config spec_name=TieringOffloadingSpec and
 # secondary_tiers=[{type:p2p}] (set by run_test.sh); without both there is no
@@ -24,9 +25,8 @@ from typing import Any, Optional
 import ray
 
 from verl.workers.rollout.replica import TokenOutput
-from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
+from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer, vLLMReplica
 
-from llm_d_rl_common.endpoints import model_label as model_label_for_epp
 from llm_d_rl_verl_integration.p2p_addressing import (
     DEFAULT_P2P_CONNECTOR_PORT,
     p2p_listener_host,
@@ -114,83 +114,18 @@ class P2PVLLMHttpServer(PDDecodeVLLMHttpServer):
         **kwargs,
     ) -> TokenOutput:
         if self._nosidecar():
-            return await self._generate_direct(
-                prompt_ids, sampling_params, request_id,
-                kv_transfer_params=kwargs.get("kv_transfer_params"),
+            # verl's generate() takes kv_transfer_params, folds it into
+            # sampling_params.extra_args and echoes vLLM's reply back in
+            # extra_fields["kv_transfer_params"]. Call it directly, skipping
+            # PDDecodeVLLMHttpServer.generate() which posts to the sidecar.
+            # It reports no cached_tokens - see the module header.
+            out = await vLLMHttpServer.generate(
+                self, prompt_ids, sampling_params, request_id, **kwargs
             )
+            self._completed_requests += 1
+            return out
         return await super().generate(
             prompt_ids, sampling_params, request_id, sidecar_headers=sidecar_headers, **kwargs
-        )
-
-    async def _generate_direct(
-        self,
-        prompt_ids: list[int],
-        sampling_params: dict[str, Any],
-        request_id: str,
-        *,
-        kv_transfer_params: Optional[dict] = None,
-    ) -> TokenOutput:
-        """Direct dispatch to vLLM's native POST /inference/v1/generate.
-
-        Used when VERL_P2P_NOSIDECAR is set. Callers pass kv_transfer_params as
-        {"remote_kv_source": {remote_host, remote_port, kv_request_id}}.
-        """
-        url = f"http://localhost:{self._server_port}/inference/v1/generate"
-        body: dict[str, Any] = {
-            "model": model_label_for_epp(self.model_config),
-            "token_ids": prompt_ids,
-            "sampling_params": self._prepare_sampling_params(sampling_params, prompt_ids),
-        }
-        if kv_transfer_params:
-            body["kv_transfer_params"] = kv_transfer_params
-            # WARNING level: logger.info() is filtered inside the Ray actor.
-            if os.environ.get("VERL_P2P_DEBUG_BODY"):
-                logger.warning(
-                    "P2P_DEBUG_BODY replica=%s url=%s kv_transfer_params=%s",
-                    self.replica_rank, url, kv_transfer_params,
-                )
-
-        session = await self._get_sidecar_session()  # a plain shared aiohttp session, not sidecar-specific despite the name
-        try:
-            async with session.request("POST", url, json=body) as resp:
-                if not resp.ok:
-                    error_body = await resp.text()
-                    raise RuntimeError(
-                        f"vLLM returned {resp.status}: {error_body} | "
-                        f"kv_transfer_params={kv_transfer_params}"
-                    )
-                data = await resp.json()
-        except Exception as e:
-            logger.error(
-                "_generate_direct() raised %s: %s - request_id=%s url=%s kv_transfer_params=%s",
-                type(e).__name__, e, request_id, url, kv_transfer_params,
-            )
-            raise
-
-        choices = data.get("choices") or []
-        if choices:
-            choice = choices[0]
-            token_ids = [int(t) for t in (choice.get("token_ids") or [])]
-            finish_reason = choice.get("finish_reason")
-            logprobs_content = (choice.get("logprobs") or {}).get("content") or []
-            log_probs = [e["logprob"] for e in logprobs_content] if logprobs_content else None
-        else:
-            token_ids, finish_reason, log_probs = [], None, None
-
-        self._completed_requests += 1
-        return TokenOutput(
-            token_ids=token_ids,
-            stop_reason=finish_reason,
-            log_probs=log_probs,
-            extra_fields={
-                "global_steps": self.global_steps,
-                # vLLM's echo of kv_transfer_params; non-null when a pull ran.
-                "kv_transfer_params_response": data.get("kv_transfer_params"),
-                # Connector-agnostic prefix-hit ground truth.
-                "cached_tokens": (
-                    (data.get("usage") or {}).get("prompt_tokens_details") or {}
-                ).get("cached_tokens"),
-            },
         )
 
 

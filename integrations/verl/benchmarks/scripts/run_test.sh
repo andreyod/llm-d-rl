@@ -287,6 +287,26 @@ read -r -a EXTRA_OV <<< "${EXTRA_OVERRIDES:-}"
 # -- launch --------------------------------------------------------------------
 cd /tmp/verl/verl/examples/grpo_trainer
 
+# -- vLLM /metrics scraper ------------------------------------------------------
+# Always on, every mode: a run costs GPU time and a re-run costs it again, while
+# this is a 1.5s poll with no measurable cost - and missing metrics have already
+# forced re-runs here. It tolerates an endpoints file that does not exist yet
+# (catches the read and loops), so starting it before the engines are up is safe.
+# Set VLLM_SCRAPE_HOST when vLLM binds loopback (nosidecar P2P).
+SCRAPE_PID=""
+for cand in "$SCRIPT_DIR/vllm_scrape.py" /tmp/utils/vllm_scrape.py; do
+  if [[ -f "$cand" ]]; then
+    rm -f "${VLLM_SCRAPE_OUT:-/tmp/vllm_metrics.csv}"
+    nohup python3 "$cand" > /tmp/vllm_scrape.log 2>&1 &
+    SCRAPE_PID=$!
+    echo "==> vLLM scraper started (pid $SCRAPE_PID) -> ${VLLM_SCRAPE_OUT:-/tmp/vllm_metrics.csv}"
+    break
+  fi
+done
+[[ -z "$SCRAPE_PID" ]] && echo "WARNING: vllm_scrape.py not found - no /metrics will be captured for this arm" >&2
+# Stop it however the run ends, so it never bleeds into the next arm's CSV.
+trap '[[ -n "$SCRAPE_PID" ]] && kill "$SCRAPE_PID" 2>/dev/null' EXIT
+
 # TRAIN_BATCH_SIZE / PPO_MINI_BATCH_SIZE are env-overridable: workloads with fewer
 # prompts than the default batch (e.g. weka replays N<256 conversations) must set
 # them to the conversation count, or the dataloader cannot fill a step.

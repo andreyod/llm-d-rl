@@ -70,16 +70,43 @@ if [ -d "$SCRIPT_DIR/utils" ]; then
   kubectl exec -n "$NS" "$HEAD" -- mkdir -p /tmp/utils
   kubectl cp "$SCRIPT_DIR/utils/strip_dca_config.py" "$NS/$HEAD:/tmp/utils/strip_dca_config.py"
 fi
+# run_test.sh always starts the /metrics scraper; ship it to the same fallback dir.
+if [ -f "$SCRIPT_DIR/vllm_scrape.py" ]; then
+  kubectl exec -n "$NS" "$HEAD" -- mkdir -p /tmp/utils
+  kubectl cp "$SCRIPT_DIR/vllm_scrape.py" "$NS/$HEAD:/tmp/utils/vllm_scrape.py"
+fi
+
+# Forward the env knobs run_test.sh reads. kubectl exec does NOT inherit the
+# caller's environment, so without this every override is silently dropped and
+# the run quietly uses task.env defaults - a wrong model or context length that
+# still produces a plausible-looking result. Values may contain spaces
+# (EXTRA_OVERRIDES is a whole hydra argument list), so they travel as separate
+# argv elements and are re-expanded by `env` on the pod, never re-split by a
+# shell. Add a name here when run_test.sh learns a new knob.
+FORWARD=(MODEL_PATH TRAIN_FILE TEST_FILE MAX_PROMPT_LENGTH MAX_RESPONSE_LENGTH
+         TRAIN_BATCH_SIZE PPO_MINI_BATCH_SIZE EXTRA_OVERRIDES CUSTOM_NAME
+         PROJECT_NAME SKIP_DCA_STRIP WORKLOADS_DIR
+         EPP_CAP_CONFIG EPP_P2P_CONFIG P2P_CPU_BYTES_TO_USE
+         WAVE_ADMISSION_MAX_WAIT_S WAVE_ADMISSION_P2P_NOSIDECAR WAVE_ADMISSION_P2P_PORT
+         VLLM_SCRAPE_OUT VLLM_SCRAPE_ENDPOINTS VLLM_SCRAPE_HOST)
+ENVV=()
+for v in "${FORWARD[@]}"; do
+  [ -n "${!v:-}" ] && ENVV+=("$v=${!v}")
+done
+if [ "${#ENVV[@]}" -gt 0 ]; then
+  echo "==> forwarding to the pod:"
+  printf '      %s\n' "${ENVV[@]}"
+fi
 
 if [ "$FG" -eq 1 ]; then
   echo "==> running attached (foreground): run_test.sh ${PASS[*]}"
-  exec kubectl exec -it -n "$NS" "$HEAD" -- bash /tmp/run_test.sh "${PASS[@]}"
+  exec kubectl exec -it -n "$NS" "$HEAD" -- env "${ENVV[@]}" bash /tmp/run_test.sh "${PASS[@]}"
 fi
 
 echo "==> launching in background on the pod: run_test.sh ${PASS[*]}"
 kubectl exec -n "$NS" "$HEAD" -- bash -c \
-  'nohup bash /tmp/run_test.sh "$@" > "'"$REMOTE_LOG"'" 2>&1 & echo "launched pid $!"' \
-  _ "${PASS[@]}"
+  'nohup env "$@" > "'"$REMOTE_LOG"'" 2>&1 & echo "launched pid $!"' \
+  _ "${ENVV[@]}" bash /tmp/run_test.sh "${PASS[@]}"
 
 cat <<EOF
 ==> streaming $REMOTE_LOG (Ctrl-C detaches the tail; the run keeps going on the pod)

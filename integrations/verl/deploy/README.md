@@ -18,17 +18,23 @@ For how the integration works (the two modes, the mandatory core, PD), see
 ### 1. Provide verl
 
 The official `verlai/verl` images are **environment** images: they ship the vLLM/CUDA/torch stack
-but not verl itself, so verl is installed at runtime. The examples here use
-`verlai/verl:vllm018.dev1` and verl commit `334d9f8b03816382cbd72e898bc8ae04efca6fbe`:
+but not verl itself, so verl is installed at runtime. The version is pinned by `VERL_COMMIT` in
+[`kuberay/deploy.env`](kuberay/deploy.env) - the single place to change it:
 
 ```bash
 git clone https://github.com/volcengine/verl.git /tmp/verl/verl
-cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
+cd /tmp/verl/verl && git checkout "$VERL_COMMIT"
 pip install --no-deps -e .
 ```
 
 Do this on **every** node (head and all workers). On KubeRay this runs from the `postStart` hook in
-[`kuberay/ray-cluster.yaml.tmpl`](kuberay/ray-cluster.yaml.tmpl).
+[`kuberay/ray-cluster.yaml.tmpl`](kuberay/ray-cluster.yaml.tmpl), which `deploy.sh` renders with the
+value from `deploy.env`.
+
+To move to a newer verl, edit `VERL_COMMIT` and recreate the pods (`postStart` clones fresh on every
+start, so nothing is cached). Prefer a full SHA over a branch name: the head and the workers clone
+independently, so a branch can install two different commits in one cluster. Each pod's `postStart`
+echoes `verl at <sha> (requested <ref>)` - compare them across pods before trusting a branch run.
 
 #### Nightly-vLLM environment image
 

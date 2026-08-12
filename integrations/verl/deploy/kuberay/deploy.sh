@@ -52,6 +52,10 @@ set +a
 # no default: :? fails fast (before any kubectl) on empty OR unset.
 : "${NAMESPACE:?not set - export NAMESPACE=<your-namespace>}"
 
+# An empty VERL_COMMIT would render a bare `git checkout`, which exits 0 and
+# leaves the clone on its default branch - a silently wrong verl version.
+: "${VERL_COMMIT:?not set - define it in deploy.env}"
+
 # Resolve the per-engine column from deploy.env into the names the manifest uses.
 # Fails fast on an engine with no column rather than rendering blank values into a
 # manifest that would then fail confusingly at pod start.
@@ -74,7 +78,7 @@ render() {
   select_engine
   # Explicit var list keeps envsubst from touching the container-runtime
   # $EPP_IMAGE / $ENVOY_IMAGE in the crane args and the shell $ in postStart.
-  envsubst '${NAMESPACE} ${IMG_TRAINER} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY} ${IMG_SIDECAR} ${ENGINE_PY_MODULE} ${ENGINE_HEAD_NUM_CPUS} ${ENGINE_ALLOC_CONF}' \
+  envsubst '${NAMESPACE} ${IMG_TRAINER} ${IMG_CRANE} ${IMG_EPP} ${IMG_ENVOY} ${IMG_SIDECAR} ${ENGINE_PY_MODULE} ${ENGINE_HEAD_NUM_CPUS} ${ENGINE_ALLOC_CONF} ${VERL_COMMIT}' \
     < ray-cluster.yaml.tmpl
 }
 

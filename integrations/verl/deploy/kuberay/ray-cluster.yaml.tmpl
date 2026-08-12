@@ -72,9 +72,12 @@ spec:
                   # installs without it. Harmless where it is already set.
                   export PIP_BREAK_SYSTEM_PACKAGES=1
 
-                  # Install verl from pinned commit
+                  # Install verl at the ref from deploy.env's VERL_COMMIT. Echo the
+                  # resolved SHA: with a branch ref, head and workers clone at different
+                  # times and can land on different commits.
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
-                  cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
+                  cd /tmp/verl/verl && git checkout '${VERL_COMMIT}'
+                  echo "verl at $(git rev-parse HEAD) (requested '${VERL_COMMIT}')"
                   # verl imports the old FusedMoE name; patch in a fallback. verl is
                   # cloned fresh every pod start, so this cannot live in an image.
                   python3 - <<'PYEOF'
@@ -297,9 +300,12 @@ spec:
                   # installs without it. Harmless where it is already set.
                   export PIP_BREAK_SYSTEM_PACKAGES=1
 
-                  # Install verl from pinned commit
+                  # Install verl at the ref from deploy.env's VERL_COMMIT. Echo the
+                  # resolved SHA: with a branch ref, head and workers clone at different
+                  # times and can land on different commits.
                   git clone https://github.com/volcengine/verl.git /tmp/verl/verl
-                  cd /tmp/verl/verl && git checkout 334d9f8b03816382cbd72e898bc8ae04efca6fbe
+                  cd /tmp/verl/verl && git checkout '${VERL_COMMIT}'
+                  echo "verl at $(git rev-parse HEAD) (requested '${VERL_COMMIT}')"
                   # verl imports the old FusedMoE name; patch in a fallback. verl is
                   # cloned fresh every pod start, so this cannot live in an image.
                   python3 - <<'PYEOF'

@@ -131,6 +131,9 @@ class EPPLLMClient(LLMServerClient):
                 video_data=video_data,
                 **extra_kwargs,
             )
+            global_steps = out.extra_fields.get("global_steps")
+            out.extra_fields.setdefault("min_global_steps", global_steps)
+            out.extra_fields.setdefault("max_global_steps", global_steps)
             return out
         finally:
             t_end = time.monotonic()
